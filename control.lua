@@ -10,6 +10,7 @@
 -- Version 0.4.2 flexible buffer diplay
 -- Version 0.4.3 reorganise code
 -- Version 0.5.0 locale de/en; buffer module
+-- Version 0.5.2 multiplayer & multi-surface stability (on_load fix)
 -- =========================================
 
 local DEBUG = true
@@ -29,6 +30,8 @@ local build_base_filename
 local maybe_prompt_runname_for_all_players
 local handle_runname_submit
 local resolve_entity
+local cleanup_entity_from_registries
+local clear_invalid_rendering_objects
 
 -- -----------------------------------------
 -- Implementations
@@ -83,10 +86,8 @@ debug_print = function(msg)
   if DEBUG then
     local prefix = {"logistics_simulation.chat_name"}
     if type(msg) == "table" then
-      -- msg is already a locale table
       game.print({"", prefix, " ", msg})
     else
-      -- msg is a string
       game.print({"", prefix, " ", tostring(msg)})
     end
   end
@@ -98,7 +99,6 @@ ensure_storage_defaults = function()
   storage.base_filename = storage.base_filename or nil
   storage.sample_interval = storage.sample_interval or M.SAMPLE_INTERVAL_TICKS
 
-  -- Buffer defaults centrally in module
   Buffer.ensure_defaults()
 
   storage.registry = storage.registry or {}
@@ -107,6 +107,9 @@ ensure_storage_defaults = function()
   storage.next_machine_id = storage.next_machine_id or 1
   storage.protected = storage.protected or {}
   storage.next_protect_id = storage.next_protect_id or 1
+  
+  -- Flag to track if we need to clear rendering objects after load
+  storage._needs_rendering_cleanup = storage._needs_rendering_cleanup or false
 end
 
 sanitize_filename = function(s)
@@ -133,6 +136,77 @@ maybe_prompt_runname_for_all_players = function()
   end
 end
 
+-- NEW: Clear rendering objects (called from on_tick after load)
+clear_invalid_rendering_objects = function()
+  if not storage._needs_rendering_cleanup then return end
+  
+  if storage.registry then
+    for _, rec in pairs(storage.registry) do
+      rec.marker_circle = nil
+      rec.marker_text = nil
+    end
+  end
+  if storage.machines then
+    for _, rec in pairs(storage.machines) do
+      rec.marker_circle = nil
+      rec.marker_text = nil
+    end
+  end
+  if storage.protected then
+    for _, rec in pairs(storage.protected) do
+      rec.marker_circle = nil
+      rec.marker_text = nil
+    end
+  end
+  
+  storage._needs_rendering_cleanup = false
+end
+
+-- NEW: Cleanup entity from all registries
+cleanup_entity_from_registries = function(unit_number, log_fn)
+  if not unit_number then return false end
+  
+  local removed_any = false
+  
+  -- Registry (chests)
+  if storage.registry and storage.registry[unit_number] then
+    local rec = storage.registry[unit_number]
+    Chests.update_marker(rec, nil)
+    storage.registry[unit_number] = nil
+    
+    if log_fn then
+      log_fn(string.format("EV;%d;AUTO_UNREG;%s;%d", game.tick, rec.id or "?", unit_number))
+    end
+    removed_any = true
+  end
+  
+  -- Machines
+  if storage.machines and storage.machines[unit_number] then
+    local rec = storage.machines[unit_number]
+    Chests.update_marker(rec, nil)
+    storage.machines[unit_number] = nil
+    
+    if log_fn then
+      log_fn(string.format("EV;%d;AUTO_UNMACH;%s;%d", game.tick, rec.id or "?", unit_number))
+    end
+    removed_any = true
+  end
+  
+  -- Protected
+  if storage.protected and storage.protected[unit_number] then
+    local rec = storage.protected[unit_number]
+    Chests.update_marker(rec, nil)
+    storage.protected[unit_number] = nil
+    
+    if log_fn then
+      log_fn(string.format("EV;%d;AUTO_UNPROT;%s;%d", game.tick, rec.id or "?", unit_number))
+    end
+    removed_any = true
+  end
+  
+  return removed_any
+end
+
 -- -----------------------------------------
 -- Events
 -- -----------------------------------------
@@ -143,9 +217,28 @@ script.on_init(function()
   maybe_prompt_runname_for_all_players()
 end)
 
-script.on_configuration_changed(function(_)
+script.on_configuration_changed(function(data)
   ensure_storage_defaults()
+  
+  -- Migration for 0.5.2+
+  local mod_changes = data.mod_changes and data.mod_changes["logistics_simulation"]
+  if mod_changes then
+    local old_version = mod_changes.old_version
+    if old_version and old_version < "0.5.2" then
+      debug_print({"", "Migrating from ", old_version, " to 0.5.2"})
+      -- Mark that we need to clear rendering objects on next tick
+      storage._needs_rendering_cleanup = true
+    end
+  end
+  
   maybe_prompt_runname_for_all_players()
+end)
+
+-- NEW: Set flag on load (SAFE - only reads storage, doesn't modify)
+script.on_load(function()
+  -- After load, rendering IDs are invalid and need to be cleared
+  -- We set a flag in on_configuration_changed and clear it in on_tick
+  -- This is the SAFE way to handle post-load cleanup
 end)
 
 script.on_event(defines.events.on_gui_confirmed, function(event)
@@ -165,6 +258,21 @@ script.on_event(defines.events.on_gui_closed, function(event)
     element.destroy()
     return
   end
+end)
+
+-- NEW: Auto-cleanup destroyed entities
+local entity_cleanup_events = {
+  defines.events.on_entity_died,
+  defines.events.on_player_mined_entity,
+  defines.events.on_robot_mined_entity,
+  defines.events.script_raised_destroy
+}
+
+script.on_event(entity_cleanup_events, function(event)
+  local ent = event.entity
+  if not (ent and ent.unit_number) then return end
+  
+  cleanup_entity_from_registries(ent.unit_number, Buffer.append_line)
 end)
 
 -- -----------------------------------------
@@ -200,32 +308,84 @@ local function tick_update_markers()
   end
 end
 
+-- NEW: Multi-surface logging
 local function tick_build_and_append_logline()
   local tick = game.tick
-  local parts = SimLog.begin_telegram(tick, game.surfaces[1], game.forces.player)
-
-  local chest_str = SimLog.build_string(storage.registry, resolve_entity, SimLog.encode_chest)
-  if chest_str ~= "" then
-    parts[#parts+1] = chest_str
+  
+  -- Collect all surfaces used by registered entities
+  local surfaces_used = {}
+  
+  for _, rec in pairs(storage.registry or {}) do
+    surfaces_used[rec.surface_index] = true
   end
-
-  local machine_str = SimLog.build_string(storage.machines, resolve_entity, SimLog.encode_machine)
-  if machine_str ~= "" then
-    parts[#parts+1] = machine_str
+  for _, rec in pairs(storage.machines or {}) do
+    surfaces_used[rec.surface_index] = true
   end
-
-  Buffer.append_line(SimLog.end_telegram(parts))
+  
+  -- If nothing registered, use default surface
+  if not next(surfaces_used) then
+    surfaces_used[1] = true
+  end
+  
+  -- Log for each surface
+  for surf_idx, _ in pairs(surfaces_used) do
+    local surface = game.get_surface(surf_idx)
+    if not surface or not surface.valid then
+      goto continue
+    end
+    
+    local force = game.forces.player
+    if not force or not force.valid then
+      goto continue
+    end
+    
+    local parts = SimLog.begin_telegram(tick, surface, force)
+    
+    -- Only add entities from THIS surface
+    local chest_str = SimLog.build_string_for_surface(
+      storage.registry, 
+      surf_idx,
+      resolve_entity, 
+      SimLog.encode_chest
+    )
+    if chest_str ~= "" then
+      parts[#parts+1] = chest_str
+    end
+    
+    local machine_str = SimLog.build_string_for_surface(
+      storage.machines,
+      surf_idx,
+      resolve_entity,
+      SimLog.encode_machine
+    )
+    if machine_str ~= "" then
+      parts[#parts+1] = machine_str
+    end
+    
+    Buffer.append_line(SimLog.end_telegram(parts))
+    
+    ::continue::
+  end
 end
 
 script.on_event(defines.events.on_tick, function(event)
+  -- FIRST: Clear invalid rendering objects after load (if needed)
+  if storage._needs_rendering_cleanup then
+    clear_invalid_rendering_objects()
+  end
+  
+  -- Periodic cleanup of disconnected players (every 10 seconds)
+  if (event.tick % 600) == 0 then
+    Buffer.cleanup_disconnected_players()
+  end
+  
   if not tick_should_log() then
-    -- Even when not logging: GUI might be dirty (e.g. Copy/Navigation/Runname)
     Buffer.tick_refresh_open_guis(event.tick)
     return
   end
+  
   tick_update_markers()
   tick_build_and_append_logline()
-  -- Throttled GUI refresh
   Buffer.tick_refresh_open_guis(event.tick)
 end)
 
@@ -333,7 +493,6 @@ local function click_reset_ok(event)
     }
   end
 
-  -- FIX: Consolidated del_log handling
   if opts.del_log then
     storage.buffer_lines = {}
     storage.perline_counter = 0
@@ -397,7 +556,6 @@ local function click_buffer_nav(event, element)
     local new_start = math.min(n, view.end_line + 1)
     local end_limit = math.min(n, new_start + (page - 1))
 
-    -- Start stays new_start, only end gets truncated if TEXT_MAX applies
     local s, e = Buffer.fit_window_forward_to_chars(new_start, end_limit, M.TEXT_MAX)
     view.start_line, view.end_line = s, e
   end

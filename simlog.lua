@@ -7,6 +7,7 @@
 -- Version 0.3.1 power and more infos
 -- Version 0.3.2 machines finished products
 -- Version 0.3.3 simlog.M.ITEM_ALIASES
+-- Version 0.5.2 multi-surface support
 -- =========================================
 
 local M = require("config")
@@ -16,7 +17,7 @@ local UI = require("ui")
 local Chests = require("chests")
 
 local SimLog = {}
-SimLog.version = "0.3.3"
+SimLog.version = "0.5.2"
 
 SimLog.MACHINE_STATE = {
   RUN       = "RUN",
@@ -116,11 +117,16 @@ function SimLog.begin_telegram(tick, surface, force)
   parts[#parts+1] = tostring(line_counter) .. " " .. "tick=" .. tostring(tick)
   parts[#parts+1] = "0000"  -- Placeholder for total length (4 digits)
  
+  -- Add surface name for multi-surface tracking
+  if surface and surface.valid then
+    parts[#parts+1] = "SURF:" .. tostring(surface.name)
+  end
+  
   -- Power 
   local pwr = SimLog.get_power_w_1s(surface)
   parts[#parts+1] = pwr and ("PWR:" .. string.format("%.0f", pwr)) or "PWR:NA"
   
-  -- FIX: Removed leading semicolon from pollution string
+  -- Pollution (no leading semicolon)
   local pol = SimLog.get_pollution_per_s(surface)
   if pol then
     parts[#parts+1] = string.format("POL=%.2f,%.2f,%+.2f", pol.produced, pol.absorbed, pol.delta)
@@ -148,6 +154,37 @@ function SimLog.build_string(list, resolve_fn, encode_fn)
   for _, rec in pairs(list) do
     arr[#arr+1] = rec
   end
+
+  -- Stable sort (primary by id, fallback unit_number)
+  table.sort(arr, function(a, b)
+    local aid = a.id or ""
+    local bid = b.id or ""
+    if aid ~= bid then return aid < bid end
+    return (a.unit_number or 0) < (b.unit_number or 0)
+  end)
+
+  local segs = {}
+  for i = 1, #arr do
+    local rec = arr[i]
+    local ent = resolve_fn(rec)
+    segs[#segs+1] = encode_fn(rec, ent)
+  end
+
+  return table.concat(segs, ";")
+end
+
+-- NEW: Build string filtered by surface
+function SimLog.build_string_for_surface(list, surface_index, resolve_fn, encode_fn)
+  if not list or next(list) == nil then return "" end
+
+  local arr = {}
+  for _, rec in pairs(list) do
+    if rec.surface_index == surface_index then
+      arr[#arr+1] = rec
+    end
+  end
+
+  if #arr == 0 then return "" end
 
   -- Stable sort (primary by id, fallback unit_number)
   table.sort(arr, function(a, b)
@@ -327,7 +364,7 @@ function SimLog.build_header(meta)
   if meta.surface then    lines[#lines+1] = "# surface=" .. tostring(meta.surface) end
   if meta.force then      lines[#lines+1] = "# force=" .. tostring(meta.force) end
 
-  lines[#lines+1] = "# format: tick;len4;segments..."
+  lines[#lines+1] = "# format: tick;len4;surface;segments..."
   lines[#lines+1] = "# ----"
 
   return table.concat(lines, "\n")

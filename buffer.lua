@@ -3,6 +3,7 @@
 -- Buffer Module
 -- (Buffer lines, paging/windowing, GUI refresh throttling)
 -- Version 0.5.0 first introduced in LogSim 0.5.0
+-- Version 0.5.2 improved race condition handling & player cleanup
 --
 -- Responsibilities:
 --  - storage defaults: buffer_lines, buffer_view, gui_dirty, perline_counter
@@ -10,12 +11,13 @@
 --  - paging/window functions: compute_tail_window, fit_window_to_chars,
 --    fit_window_forward_to_chars, get_text_range
 --  - throttled GUI refresh: tick_refresh_open_guis, refresh_for_player
+--  - cleanup_disconnected_players (NEW in 0.5.2)
 -- =========================================
 
 local M = require("config")
 
 local Buffer = {}
-Buffer.version = "0.5.0"
+Buffer.version = "0.5.2"
 
 -- -----------------------------------------
 -- Defaults
@@ -50,13 +52,11 @@ function Buffer.append_line(line)
 
   storage.buffer_lines[#storage.buffer_lines + 1] = tostring(line)
 
-  -- FIX: Use while loop to handle edge case
   local MAX_LINES = M.BUFFER_MAX_LINES
   while #storage.buffer_lines > MAX_LINES do
     table.remove(storage.buffer_lines, 1)
   end
 
-  -- NOT immediately refresh GUI -> throttled
   Buffer.mark_dirty_for_open_guis()
 end
 
@@ -128,7 +128,7 @@ function Buffer.fit_window_to_chars(end_line, max_chars)
   return start, end_line
 end
 
--- FIX: Fit forwards (start fixed, end gets truncated)
+-- Fit forwards (start fixed, end gets truncated)
 function Buffer.fit_window_forward_to_chars(start_line, end_limit, max_chars)
   Buffer.ensure_defaults()
 
@@ -142,7 +142,6 @@ function Buffer.fit_window_forward_to_chars(start_line, end_limit, max_chars)
   local chars = 1
   local e = start_line
   
-  -- FIX: Added boundary check (e < n)
   while e < end_limit and e < n do
     local add = #lines[e + 1] + 1
     if chars + add > max_chars then break end
@@ -175,17 +174,54 @@ function Buffer.ensure_view(player_index)
 end
 
 -- -----------------------------------------
--- GUI Refresh (throttled)
+-- NEW: Cleanup disconnected players
+-- -----------------------------------------
+function Buffer.cleanup_disconnected_players()
+  if not storage.buffer_view then return end
+  
+  local connected = {}
+  for _, p in pairs(game.connected_players) do
+    connected[p.index] = true
+  end
+  
+  -- Cleanup view states and dirty flags
+  for idx, _ in pairs(storage.buffer_view) do
+    if not connected[idx] then
+      storage.buffer_view[idx] = nil
+    end
+  end
+  
+  if storage.gui_dirty then
+    for idx, _ in pairs(storage.gui_dirty) do
+      if not connected[idx] then
+        storage.gui_dirty[idx] = nil
+      end
+    end
+  end
+end
+
+-- -----------------------------------------
+-- GUI Refresh (improved robustness in 0.5.2)
 -- -----------------------------------------
 function Buffer.refresh_for_player(player, force_text_redraw)
   if not (player and player.valid) then return end
   Buffer.ensure_defaults()
 
   local frame = player.gui.screen[M.GUI_BUFFER_FRAME]
-  if not (frame and frame.valid) then return end
+  if not (frame and frame.valid) then 
+    -- GUI was closed, cleanup view state
+    storage.buffer_view[player.index] = nil
+    storage.gui_dirty[player.index] = false
+    return 
+  end
 
   local box = frame[M.GUI_BUFFER_BOX]
-  if not (box and box.valid) then return end
+  if not (box and box.valid) then 
+    -- Box missing, cleanup
+    storage.buffer_view[player.index] = nil
+    storage.gui_dirty[player.index] = false
+    return 
+  end
 
   local toolbar = frame.logsim_buffer_toolbar
   if not (toolbar and toolbar.valid) then return end
@@ -207,10 +243,22 @@ function Buffer.refresh_for_player(player, force_text_redraw)
     local prefix = (view.start_line > 1) and "...(truncated)\n" or ""
     local text = prefix .. Buffer.get_text_range(view.start_line, view.end_line)
     
-    -- FIX: Use pcall to protect against race conditions
-    pcall(function()
-      box.text = text
-    end)
+    -- Improved race condition handling
+    if box and box.valid then
+      local ok, err = pcall(function()
+        box.text = text
+      end)
+      if not ok then
+        -- Failed to update, cleanup and return
+        storage.gui_dirty[player.index] = false
+        return
+      end
+    else
+      -- Box became invalid during processing
+      storage.buffer_view[player.index] = nil
+      storage.gui_dirty[player.index] = false
+      return
+    end
     
     view.last_start = view.start_line
     view.last_end   = view.end_line
