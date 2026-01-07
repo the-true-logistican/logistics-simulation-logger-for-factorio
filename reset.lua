@@ -5,12 +5,13 @@
 -- Version 0.2.0 first für LogSim 0.2.0
 -- Version 0.2.1 reset_clear_pollution
 -- Version 0.2.2 clear products_finished
+-- Version 0.5.3 reset statistics (production, power, robots, etc.)
 -- =========================================
 
 local M = require("config")
 
 local R = {}
-R.version = "0.2.2"
+R.version = "0.5.3"
 
 -- FIX: Added validity check for power switches
 local function set_factory_power(surface, state)
@@ -203,8 +204,53 @@ local function reset_clear_inserter_hands(surface, force)
   return cleared
 end
 
--- Exported function
-function R.do_reset_simulation(surface, force, log)
+-- NEW: Reset all statistics (v0.5.3)
+local function reset_statistics(surface, force, log)
+  local stats_reset = 0
+
+  -- Helper: clear stats safely
+  local function try_clear(label, stat)
+    if stat and stat.clear then
+      local ok, err = pcall(function() stat.clear() end)
+      if ok then
+        stats_reset = stats_reset + 1
+      elseif log then
+        log(string.format("EV;%d;WARN;reset_stats_failed;%s;err=%s", game.tick, label, tostring(err)))
+      end
+    end
+  end
+
+  -- 1) Force statistics are surface-scoped in Factorio 2.0 (methods, not fields)
+  if force and force.valid and surface and surface.valid then
+    try_clear("item_prod",  force.get_item_production_statistics(surface))     -- 2.0
+    try_clear("fluid_prod", force.get_fluid_production_statistics(surface))    -- 2.0
+    try_clear("kills",      force.get_kill_count_statistics(surface))          -- 2.0
+    try_clear("build",      force.get_entity_build_count_statistics(surface))  -- 2.0
+  end
+
+  -- 2) Surface-level statistics
+  if surface and surface.valid then
+    -- Electric network (LuaFlowStatistics)
+    local electric_stats = surface.global_electric_network_statistics
+    if electric_stats then
+      try_clear("electric", electric_stats)
+    end
+
+    -- Pollution statistics (LuaFlowStatistics)
+    if surface.pollution_statistics then
+      try_clear("pollution", surface.pollution_statistics)
+    end
+  end
+
+  if log then
+    log(string.format("EV;%d;RESET_STATS;cleared=%d", game.tick, stats_reset))
+  end
+
+  return stats_reset
+end
+
+-- Exported function (updated signature for v0.5.3)
+function R.do_reset_simulation(surface, force, log, reset_stats)
   set_factory_power(surface, false)
   
   if log then
@@ -217,12 +263,18 @@ function R.do_reset_simulation(surface, force, log)
   local cleared_belts, cleared_lines = reset_clear_belts(surface, force)
   local cleared_hands = reset_clear_inserter_hands(surface, force)
   local pol_chunks, pol_removed = reset_clear_pollution(surface)
+  
+  -- NEW: Reset statistics if requested (v0.5.3)
+  local stats_cleared = 0
+  if reset_stats then
+    stats_cleared = reset_statistics(surface, force, log)
+  end
 
   if log then
     log(string.format(
-      "EV;%d;RESET_DONE;chests=%d;skipped_protected=%d;ground=%d;machines=%d;entities=%d;lines=%d;inserters=%d;pol_chunks=%d;pol_removed=%.2f",
+      "EV;%d;RESET_DONE;chests=%d;skipped_protected=%d;ground=%d;machines=%d;entities=%d;lines=%d;inserters=%d;pol_chunks=%d;pol_removed=%.2f;stats=%d",
       game.tick, cleared_chests, skipped, ground, cleared_machines, cleared_belts, cleared_lines, cleared_hands,
-      pol_chunks, pol_removed
+      pol_chunks, pol_removed, stats_cleared
     ))
   end
   

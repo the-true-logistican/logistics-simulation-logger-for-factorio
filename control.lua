@@ -11,6 +11,7 @@
 -- Version 0.4.3 reorganise code
 -- Version 0.5.0 locale de/en; buffer module
 -- Version 0.5.2 multiplayer & multi-surface stability (on_load fix)
+-- Version 0.5.3 statistics reset support
 -- =========================================
 
 local DEBUG = true
@@ -482,7 +483,8 @@ local function click_reset_ok(event)
   if not opts then return end
 
   if opts.del_items then
-    R.do_reset_simulation(player.surface, player.force, Buffer.append_line)
+    -- NEW: Pass statistics reset flag (v0.5.3)
+    R.do_reset_simulation(player.surface, player.force, Buffer.append_line, opts.del_stats)
   end
 
   if opts.del_chests or opts.del_machines or opts.del_prot then

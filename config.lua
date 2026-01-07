@@ -7,7 +7,7 @@
 
 local M = {}
 
-M.version = "0.5.0"
+M.version = "0.5.3"
 
 -- =====================================
 -- Technical Configuration
@@ -47,6 +47,7 @@ M.GUI_RESET_CHK_CHESTS   = "logsim_reset_chk_chests"
 M.GUI_RESET_CHK_MACHINES = "logsim_reset_chk_machines"
 M.GUI_RESET_CHK_PROT     = "logsim_reset_chk_prot"
 M.GUI_RESET_NAME_FIELD   = "logsim_reset_name"
+M.GUI_RESET_CHK_STATS    = "logsim_reset_chk_stats"
 
 M.GUI_BTN_OLDER = "logsim_buffer_older"
 M.GUI_BTN_TAIL  = "logsim_buffer_tail"

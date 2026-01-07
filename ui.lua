@@ -2,12 +2,13 @@
 -- LogSim (Factorio 2.0) 
 -- UI Module with Locale Support
 -- Version 0.3.0
+-- Version 0.5.3 statistics reset checkbox
 -- =========================================
 
 local M = require("config")
 
 local UI = {}
-UI.version = "0.5.0"
+UI.version = "0.5.3"
 
 function UI.show_runname_gui(player)
   if player.gui.screen.logsim_runname then return end
@@ -214,6 +215,14 @@ function UI.show_reset_dialog(player)
     state = false,
     caption = {"logistics_simulation.reset_protected"}
   }
+  
+  -- NEW: Statistics reset checkbox (v0.5.3)
+  content.add{
+    type = "checkbox",
+    name = M.GUI_RESET_CHK_STATS,
+    state = true,
+    caption = {"logistics_simulation.reset_statistics"}
+  }
 
   content.add{ type = "line" }
 
@@ -290,6 +299,7 @@ function UI.read_reset_dialog(player)
     del_chests   = chk(M.GUI_RESET_CHK_CHESTS),
     del_machines = chk(M.GUI_RESET_CHK_MACHINES),
     del_prot     = chk(M.GUI_RESET_CHK_PROT),
+    del_stats    = chk(M.GUI_RESET_CHK_STATS),  -- NEW (v0.5.3)
     new_name     = txt(M.GUI_RESET_NAME_FIELD),
   }
 end
