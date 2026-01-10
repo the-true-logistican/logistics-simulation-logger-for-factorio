@@ -26,7 +26,6 @@ local SimLog = require("simlog")
 
 -- Forward declarations
 local debug_print
-local info_print
 local ensure_storage_defaults
 local sanitize_filename
 local build_base_filename
