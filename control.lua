@@ -7,11 +7,12 @@
 -- Version 0.3.0 machines too
 -- Version 0.4.0 power, pollution, help etc.
 -- Version 0.4.1 code optimisation
--- Version 0.4.2 flexible buffer diplay
+-- Version 0.4.2 flexible buffer display
 -- Version 0.4.3 reorganise code
 -- Version 0.5.0 locale de/en; buffer module
 -- Version 0.5.2 multiplayer & multi-surface stability (on_load fix)
--- Version 0.5.3 statistics reset support
+-- Version 0.5.3 statistics reset support, localized STATIC mode
+-- Version 0.5.4 commands (/gp, /prot, /info), flying text, performance optimization
 -- =========================================
 
 local DEBUG = true
@@ -25,6 +26,7 @@ local SimLog = require("simlog")
 
 -- Forward declarations
 local debug_print
+local info_print
 local ensure_storage_defaults
 local sanitize_filename
 local build_base_filename
@@ -41,6 +43,7 @@ local clear_invalid_rendering_objects
 resolve_entity = function(rec)
   local surface = game.get_surface(rec.surface_index)
   if not surface then return nil end
+  
   local found = surface.find_entities_filtered{
     name = rec.name,
     position = rec.position,
@@ -94,22 +97,38 @@ debug_print = function(msg)
   end
 end
 
+info_print = function(player, msg)
+  if not storage.info_mode then return end
+  if not (player and player.valid) then return end
+  player.print(msg)
+end
+
 ensure_storage_defaults = function()
   storage.run_name = storage.run_name or nil
   storage.run_start_tick = storage.run_start_tick or nil
   storage.base_filename = storage.base_filename or nil
   storage.sample_interval = storage.sample_interval or M.SAMPLE_INTERVAL_TICKS
 
+  if storage.protocol_active == nil then
+    storage.protocol_active = false
+  end
+
+  if storage.info_mode == nil then
+    storage.info_mode = false
+  end
+
   Buffer.ensure_defaults()
 
   storage.registry = storage.registry or {}
   storage.next_chest_id = storage.next_chest_id or 1
+
   storage.machines = storage.machines or {}
   storage.next_machine_id = storage.next_machine_id or 1
+
   storage.protected = storage.protected or {}
   storage.next_protect_id = storage.next_protect_id or 1
-  
-  -- Flag to track if we need to clear rendering objects after load
+
+  storage.marker_dirty = storage.marker_dirty or false
   storage._needs_rendering_cleanup = storage._needs_rendering_cleanup or false
 end
 
@@ -137,7 +156,6 @@ maybe_prompt_runname_for_all_players = function()
   end
 end
 
--- NEW: Clear rendering objects (called from on_tick after load)
 clear_invalid_rendering_objects = function()
   if not storage._needs_rendering_cleanup then return end
   
@@ -163,13 +181,11 @@ clear_invalid_rendering_objects = function()
   storage._needs_rendering_cleanup = false
 end
 
--- NEW: Cleanup entity from all registries
 cleanup_entity_from_registries = function(unit_number, log_fn)
   if not unit_number then return false end
   
   local removed_any = false
   
-  -- Registry (chests)
   if storage.registry and storage.registry[unit_number] then
     local rec = storage.registry[unit_number]
     Chests.update_marker(rec, nil)
@@ -181,7 +197,6 @@ cleanup_entity_from_registries = function(unit_number, log_fn)
     removed_any = true
   end
   
-  -- Machines
   if storage.machines and storage.machines[unit_number] then
     local rec = storage.machines[unit_number]
     Chests.update_marker(rec, nil)
@@ -193,7 +208,6 @@ cleanup_entity_from_registries = function(unit_number, log_fn)
     removed_any = true
   end
   
-  -- Protected
   if storage.protected and storage.protected[unit_number] then
     local rec = storage.protected[unit_number]
     Chests.update_marker(rec, nil)
@@ -221,13 +235,11 @@ end)
 script.on_configuration_changed(function(data)
   ensure_storage_defaults()
   
-  -- Migration for 0.5.2+
   local mod_changes = data.mod_changes and data.mod_changes["logistics_simulation"]
   if mod_changes then
     local old_version = mod_changes.old_version
     if old_version and old_version < "0.5.2" then
       debug_print({"", "Migrating from ", old_version, " to 0.5.2"})
-      -- Mark that we need to clear rendering objects on next tick
       storage._needs_rendering_cleanup = true
     end
   end
@@ -235,12 +247,63 @@ script.on_configuration_changed(function(data)
   maybe_prompt_runname_for_all_players()
 end)
 
--- NEW: Set flag on load (SAFE - only reads storage, doesn't modify)
 script.on_load(function()
   -- After load, rendering IDs are invalid and need to be cleared
   -- We set a flag in on_configuration_changed and clear it in on_tick
-  -- This is the SAFE way to handle post-load cleanup
 end)
+
+-- -----------------------------------------
+-- Commands
+-- -----------------------------------------
+
+commands.add_command("gp", "Global Power Network: /gp on | /gp off", function(event)
+  local player = game.players[event.player_index]
+  local arg = event.parameter
+  
+  if arg == "on" then
+    player.surface.create_global_electric_network()
+    player.print({"logistics_simulation.cmd_gp_on"})
+  elseif arg == "off" then
+    player.surface.destroy_global_electric_network()
+    player.print({"logistics_simulation.cmd_gp_off"})
+  else
+    player.print({"logistics_simulation.cmd_gp_usage"})
+  end
+end)
+
+commands.add_command("prot", "Protocol Recording: /prot on | /prot off", function(event)
+  local player = game.players[event.player_index]
+  local arg = event.parameter
+  
+  if arg == "on" then
+    storage.protocol_active = true
+    player.print({"logistics_simulation.cmd_prot_on"})
+  elseif arg == "off" then
+    storage.protocol_active = false
+    player.print({"logistics_simulation.cmd_prot_off"})
+  else
+    player.print({"logistics_simulation.cmd_prot_usage"})
+  end
+end)
+
+commands.add_command("info", "Info Mode: /info on | /info off", function(event)
+  local player = game.players[event.player_index]
+  local arg = event.parameter
+  
+  if arg == "on" then
+    storage.info_mode = true
+    player.print({"logistics_simulation.cmd_info_on"})
+  elseif arg == "off" then
+    storage.info_mode = false
+    player.print({"logistics_simulation.cmd_info_off"})
+  else
+    player.print({"logistics_simulation.cmd_info_usage"})
+  end
+end)
+
+-- -----------------------------------------
+-- GUI Events
+-- -----------------------------------------
 
 script.on_event(defines.events.on_gui_confirmed, function(event)
   local el = event.element
@@ -261,7 +324,10 @@ script.on_event(defines.events.on_gui_closed, function(event)
   end
 end)
 
--- NEW: Auto-cleanup destroyed entities
+-- -----------------------------------------
+-- Entity Cleanup Events
+-- -----------------------------------------
+
 local entity_cleanup_events = {
   defines.events.on_entity_died,
   defines.events.on_player_mined_entity,
@@ -309,11 +375,9 @@ local function tick_update_markers()
   end
 end
 
--- NEW: Multi-surface logging
 local function tick_build_and_append_logline()
   local tick = game.tick
   
-  -- Collect all surfaces used by registered entities
   local surfaces_used = {}
   
   for _, rec in pairs(storage.registry or {}) do
@@ -323,12 +387,10 @@ local function tick_build_and_append_logline()
     surfaces_used[rec.surface_index] = true
   end
   
-  -- If nothing registered, use default surface
   if not next(surfaces_used) then
     surfaces_used[1] = true
   end
   
-  -- Log for each surface
   for surf_idx, _ in pairs(surfaces_used) do
     local surface = game.get_surface(surf_idx)
     if not surface or not surface.valid then
@@ -342,7 +404,6 @@ local function tick_build_and_append_logline()
     
     local parts = SimLog.begin_telegram(tick, surface, force)
     
-    -- Only add entities from THIS surface
     local chest_str = SimLog.build_string_for_surface(
       storage.registry, 
       surf_idx,
@@ -370,28 +431,29 @@ local function tick_build_and_append_logline()
 end
 
 script.on_event(defines.events.on_tick, function(event)
-  -- FIRST: Clear invalid rendering objects after load (if needed)
   if storage._needs_rendering_cleanup then
     clear_invalid_rendering_objects()
   end
-  
-  -- Periodic cleanup of disconnected players (every 10 seconds)
+
   if (event.tick % 600) == 0 then
     Buffer.cleanup_disconnected_players()
   end
-  
-  if not tick_should_log() then
-    Buffer.tick_refresh_open_guis(event.tick)
-    return
+
+  if storage.marker_dirty then
+    tick_update_markers()
+    storage.marker_dirty = false
   end
-  
-  tick_update_markers()
-  tick_build_and_append_logline()
+
   Buffer.tick_refresh_open_guis(event.tick)
+
+  if not storage.protocol_active then return end
+  if not tick_should_log() then return end
+
+  tick_build_and_append_logline()
 end)
 
 -- -----------------------------------------
--- Custom inputs (Hotkeys)
+-- Custom Inputs (Hotkeys)
 -- -----------------------------------------
 
 local function hotkey_toggle_buffer(event)
@@ -432,22 +494,19 @@ script.on_event(
     local name = event.input_name
 
     if name == "logsim_toggle_buffer" then
-      hotkey_toggle_buffer(event); return
-    end
-    if name == "logsim_register_chest" then
-      hotkey_register_chest(event); return
-    end
-    if name == "logsim_register_protect" then
-      hotkey_register_protect(event); return
-    end
-    if name == "logsim_unregister_selected" then
-      hotkey_unregister_selected(event); return
+      hotkey_toggle_buffer(event)
+    elseif name == "logsim_register_chest" then
+      hotkey_register_chest(event)
+    elseif name == "logsim_register_protect" then
+      hotkey_register_protect(event)
+    elseif name == "logsim_unregister_selected" then
+      hotkey_unregister_selected(event)
     end
   end
 )
 
 -- -----------------------------------------
--- GUI click handlers 
+-- GUI Click Handlers 
 -- -----------------------------------------
 
 local function click_runname_ok(event)
@@ -483,7 +542,6 @@ local function click_reset_ok(event)
   if not opts then return end
 
   if opts.del_items then
-    -- NEW: Pass statistics reset flag (v0.5.3)
     R.do_reset_simulation(player.surface, player.force, Buffer.append_line, opts.del_stats)
   end
 
@@ -534,6 +592,13 @@ local function click_buffer_nav(event, element)
     storage.buffer_view[player.index] = view
   end
 
+  if element.name == M.GUI_BTN_TAIL and not storage.protocol_active then
+    view.follow = false
+    player.print({"logistics_simulation.protocol_off_static_mode"})
+    Buffer.refresh_for_player(player)
+    return
+  end
+
   if element.name == M.GUI_BTN_TAIL then
     view.follow = true
     Buffer.refresh_for_player(player)
@@ -552,8 +617,8 @@ local function click_buffer_nav(event, element)
     new_start, new_end = Buffer.fit_window_to_chars(new_end, M.TEXT_MAX)
     view.start_line, view.end_line = new_start, new_end
 
-  else -- NEWER
-    view.follow = false 
+  else
+    view.follow = false
 
     local new_start = math.min(n, view.end_line + 1)
     local end_limit = math.min(n, new_start + (page - 1))
@@ -594,9 +659,6 @@ local function click_help_close(event)
   if hf and hf.valid then hf.destroy() end
 end
 
--- -----------------------------------------
--- on_gui_click (Dispatcher)
--- -----------------------------------------
 script.on_event(defines.events.on_gui_click, function(event)
   local element = event.element
   if not (element and element.valid) then return end
@@ -604,35 +666,22 @@ script.on_event(defines.events.on_gui_click, function(event)
   local name = element.name
 
   if name == "logsim_runname_ok" then
-    click_runname_ok(event); return
-  end
-
-  if name == M.GUI_BTN_HIDE or name == M.GUI_CLOSE then
-    click_hide_or_close(event); return
-  end
-
-  if name == M.GUI_BTN_RESET then
-    click_reset_open(event); return
-  end
-  if name == M.GUI_RESET_CANCEL then
-    click_reset_cancel(event); return
-  end
-  if name == M.GUI_RESET_OK then
-    click_reset_ok(event); return
-  end
-
-  if name == M.GUI_BTN_OLDER or name == M.GUI_BTN_TAIL or name == M.GUI_BTN_NEWER then
-    click_buffer_nav(event, element); return
-  end
-
-  if name == M.GUI_BTN_COPY then
-    click_copy(event); return
-  end
-
-  if name == M.GUI_BTN_HELP then
-    click_help_toggle(event); return
-  end
-  if name == M.GUI_HELP_CLOSE then
-    click_help_close(event); return
+    click_runname_ok(event)
+  elseif name == M.GUI_BTN_HIDE or name == M.GUI_CLOSE then
+    click_hide_or_close(event)
+  elseif name == M.GUI_BTN_RESET then
+    click_reset_open(event)
+  elseif name == M.GUI_RESET_CANCEL then
+    click_reset_cancel(event)
+  elseif name == M.GUI_RESET_OK then
+    click_reset_ok(event)
+  elseif name == M.GUI_BTN_OLDER or name == M.GUI_BTN_TAIL or name == M.GUI_BTN_NEWER then
+    click_buffer_nav(event, element)
+  elseif name == M.GUI_BTN_COPY then
+    click_copy(event)
+  elseif name == M.GUI_BTN_HELP then
+    click_help_toggle(event)
+  elseif name == M.GUI_HELP_CLOSE then
+    click_help_close(event)
   end
 end)

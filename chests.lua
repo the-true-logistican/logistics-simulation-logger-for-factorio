@@ -1,14 +1,16 @@
 -- =========================================
 -- LogSim (Factorio 2.0) 
 -- Chest/Protected Registry Module with Locale
--- Version 0.3.0
+--
+-- Version 0.3.0 first for LogSim 0.3.0
+-- Version 0.5.0 locale support
+-- Version 0.5.4 flying text feedback, optimized entity resolution, info_print
 -- =========================================
 
 local M = require("config")
 
-local Chests = {
-   version = "0.5.0"
-}
+local Chests = {}
+Chests.version = "0.5.4"
 
 local SUPPORTED_MACHINE_TYPES = {
   ["assembling-machine"] = true,
@@ -18,9 +20,10 @@ local SUPPORTED_MACHINE_TYPES = {
   ["rocket-silo"] = true,
 }
 
--- ----------------------------
--- Helpers machine or chest
--- ----------------------------
+-- -----------------------------------------
+-- Helper: Entity Type Check
+-- -----------------------------------------
+
 local function is_chest(ent)
   return ent and ent.valid and (ent.type == "container" or ent.type == "logistic-container")
 end
@@ -29,9 +32,10 @@ local function is_machine(ent)
   return ent and ent.valid and SUPPORTED_MACHINE_TYPES[ent.type] == true
 end
 
--- ----------------------------
--- Helpers (Rendering)
--- ----------------------------
+-- -----------------------------------------
+-- Helper: Rendering
+-- -----------------------------------------
+
 local function as_render_object(x)
   if not x then return nil end
   if type(x) == "number" then
@@ -47,28 +51,58 @@ local function destroy_render(x)
   end
 end
 
--- ----------------------------
--- Public: Selection check
--- ----------------------------
+-- -----------------------------------------
+-- Helper: Flying Text
+-- -----------------------------------------
+
+local function fly(player, entity, msg, cursor_pos)
+  if not (player and player.valid and msg) then return end
+
+  local pos = nil
+
+  if entity and entity.valid and entity.position then
+    pos = entity.position
+  elseif cursor_pos then
+    pos = cursor_pos
+  else
+    pos = player.position
+  end
+
+  player.create_local_flying_text{
+    text = msg,
+    position = pos,
+    color = {r=1, g=1, b=1}
+  }
+end
+
+-- -----------------------------------------
+-- Public: Selection Check
+-- -----------------------------------------
+
 function Chests.check_selected_entity(player)
   local ent = player.selected
 
   if not ent or not ent.valid then
-    player.print({"logistics_simulation.no_entity_selected"})
+    local msg = {"logistics_simulation.no_entity_selected"}
+    info_print(player, msg)
+    fly(player, nil, msg)
     return false
   end
 
   if not ent.unit_number then
-    player.print({"logistics_simulation.no_unit_number"})
+    local msg = {"logistics_simulation.no_unit_number"}
+    info_print(player, msg)
+    fly(player, nil, msg)
     return false
   end
 
   return true
 end
 
--- ----------------------------
--- Public: Marker update
--- ----------------------------
+-- -----------------------------------------
+-- Public: Marker Update
+-- -----------------------------------------
+
 function Chests.update_marker(rec, ent)
   if not ent or not ent.valid then
     destroy_render(rec.marker_circle)
@@ -96,9 +130,10 @@ function Chests.update_marker(rec, ent)
   end
 end
 
--- ----------------------------
--- Public: check entity
--- ----------------------------
+-- -----------------------------------------
+-- Public: Register Selected
+-- -----------------------------------------
+
 function Chests.register_selected(player, log)
   if not Chests.check_selected_entity(player) then return end
   local ent = player.selected
@@ -111,45 +146,73 @@ function Chests.register_selected(player, log)
     return Chests.register_machine(player, log)
   end
 
-  player.print({"logistics_simulation.no_reg_entity"})
+  local msg = {"logistics_simulation.no_reg_entity"}
+  info_print(player, msg)
+  fly(player, ent, msg)
 end
 
--- ----------------------------
--- Public: Resolve entity from record
--- ----------------------------
+-- -----------------------------------------
+-- Public: Resolve Entity (Optimized)
+-- -----------------------------------------
+
 function Chests.resolve_entity(rec)
-  local surface = game.get_surface(rec.surface_index)
-  if not surface then return nil end
+  if not rec then return nil end
 
-  local found = surface.find_entities_filtered{
-    name = rec.name,
-    position = rec.position,
-    limit = 1
-  }
-  return (found and found[1]) or nil
+  if rec.unit_number then
+    local e = game.get_entity_by_unit_number(rec.unit_number)
+    if e and e.valid then
+      return e
+    end
+  end
+
+  local surface = rec.surface_index and game.get_surface(rec.surface_index)
+  if surface and surface.valid and rec.name and rec.position then
+    local e = surface.find_entity(rec.name, rec.position)
+    if e and e.valid then
+      if (not rec.unit_number) or (e.unit_number == rec.unit_number) then
+        return e
+      end
+    end
+
+    local found = surface.find_entities_filtered{
+      name = rec.name,
+      position = rec.position,
+      radius = 0.5,
+      limit = 1
+    }
+    e = found and found[1]
+    if e and e.valid then
+      if (not rec.unit_number) or (e.unit_number == rec.unit_number) then
+        return e
+      end
+    end
+  end
+
+  return nil
 end
 
--- ----------------------------
--- Public: Register chest/machine
--- ----------------------------
+-- -----------------------------------------
+-- Public: Register Chest
+-- -----------------------------------------
+
 function Chests.register_chest(player, log)
   if not Chests.check_selected_entity(player) then return end
 
   local ent = player.selected
   if ent.type ~= "container" and ent.type ~= "logistic-container" then
-    player.print({"logistics_simulation.no_chest"})
+    info_print(player, {"logistics_simulation.no_chest"})
     return
   end
 
   if storage.registry[ent.unit_number] then
-    player.print({"logistics_simulation.already_registered_chest"})
+    info_print(player, {"logistics_simulation.already_registered_chest"})
     return
   end
 
   local id = string.format("C%02d", storage.next_chest_id)
   storage.next_chest_id = storage.next_chest_id + 1
 
-  storage.registry[ent.unit_number] = {
+  local rec = {
     id = id,
     unit_number = ent.unit_number,
     name = ent.name,
@@ -159,6 +222,11 @@ function Chests.register_chest(player, log)
     marker_text_id = nil
   }
 
+  storage.registry[ent.unit_number] = rec
+
+  Chests.update_marker(rec, ent)
+  storage.marker_dirty = true
+
   if log then
     log(string.format(
       "EV;%d;REG;id=%s;unit=%d;name=%s;x=%.1f;y=%.1f",
@@ -166,28 +234,34 @@ function Chests.register_chest(player, log)
     ))
   end
 
-  player.print({"logistics_simulation.registered_chest", id})
-  player.print({"logistics_simulation.show_buffer"})
+  local msg = {"logistics_simulation.registered_chest", id}
+  info_print(player, msg)
+  fly(player, ent, msg)
+  info_print(player, {"logistics_simulation.show_buffer"})
 end
+
+-- -----------------------------------------
+-- Public: Register Machine
+-- -----------------------------------------
 
 function Chests.register_machine(player, log)
   if not Chests.check_selected_entity(player) then return end
   local ent = player.selected
 
   if not is_machine(ent) then
-    player.print({"logistics_simulation.no_machine"})
+    info_print(player, {"logistics_simulation.no_machine"})
     return
   end
 
   if storage.machines[ent.unit_number] then
-    player.print({"logistics_simulation.already_registered_machine"})
+    info_print(player, {"logistics_simulation.already_registered_machine"})
     return
   end
 
   local id = string.format("M%02d", storage.next_machine_id)
   storage.next_machine_id = storage.next_machine_id + 1
 
-  storage.machines[ent.unit_number] = {
+  local rec = {
     id = id,
     unit_number = ent.unit_number,
     name = ent.name,
@@ -198,6 +272,11 @@ function Chests.register_machine(player, log)
     marker_text = nil
   }
 
+  storage.machines[ent.unit_number] = rec
+
+  Chests.update_marker(rec, ent)
+  storage.marker_dirty = true
+
   if log then
     log(string.format(
       "EV;%d;MACH;id=%s;unit=%d;type=%s;name=%s;x=%.1f;y=%.1f",
@@ -205,27 +284,30 @@ function Chests.register_machine(player, log)
     ))
   end
 
-  player.print({"logistics_simulation.registered_machine", id})
-  player.print({"logistics_simulation.show_buffer"})
+  local msg = {"logistics_simulation.registered_machine", id}
+  info_print(player, msg)
+  fly(player, ent, msg)
+  info_print(player, {"logistics_simulation.show_buffer"})
 end
 
--- ----------------------------
--- Public: Register protected entity
--- ----------------------------
+-- -----------------------------------------
+-- Public: Register Protected
+-- -----------------------------------------
+
 function Chests.register_protect(player, log)
   if not Chests.check_selected_entity(player) then return end
 
   local ent = player.selected
 
   if storage.protected[ent.unit_number] then
-    player.print({"logistics_simulation.already_protected"})
+    info_print(player, {"logistics_simulation.already_protected"})
     return
   end
 
   local id = string.format("P%02d", storage.next_protect_id)
   storage.next_protect_id = storage.next_protect_id + 1
 
-  storage.protected[ent.unit_number] = {
+  local rec = {
     id = id,
     unit_number = ent.unit_number,
     name = ent.name,
@@ -235,6 +317,11 @@ function Chests.register_protect(player, log)
     marker_text = nil
   }
 
+  storage.protected[ent.unit_number] = rec
+
+  Chests.update_marker(rec, ent)
+  storage.marker_dirty = true
+
   if log then
     log(string.format(
       "EV;%d;PROT;id=%s;unit=%d;name=%s;x=%.1f;y=%.1f",
@@ -242,13 +329,16 @@ function Chests.register_protect(player, log)
     ))
   end
 
-  player.print({"logistics_simulation.registered_protected", id})
-  player.print({"logistics_simulation.show_buffer"})
+  local msg = {"logistics_simulation.registered_protected", id}
+  info_print(player, msg)
+  fly(player, ent, msg)
+  info_print(player, {"logistics_simulation.show_buffer"})
 end
 
--- ----------------------------
--- Public: Unregister selected
--- ----------------------------
+-- -----------------------------------------
+-- Public: Unregister Selected
+-- -----------------------------------------
+
 function Chests.unregister_selected(player, log)
   if not Chests.check_selected_entity(player) then return end
 
@@ -256,7 +346,6 @@ function Chests.unregister_selected(player, log)
   local unit = ent.unit_number
   local removed_any = false
 
-  -- Registry
   local rec = storage.registry and storage.registry[unit]
   if rec then
     Chests.update_marker(rec, nil)
@@ -266,11 +355,10 @@ function Chests.unregister_selected(player, log)
     end
 
     storage.registry[unit] = nil
-    player.print({"logistics_simulation.unregistered_registry", rec.id or "?"})
+    info_print(player, {"logistics_simulation.unregistered_registry", rec.id or "?"})
     removed_any = true
   end
 
-  -- Protected
   local prec = storage.protected and storage.protected[unit]
   if prec then
     Chests.update_marker(prec, nil)
@@ -280,36 +368,39 @@ function Chests.unregister_selected(player, log)
       log(string.format("EV;%d;UNPROT;%s;%d", game.tick, prec.id or "?", unit))
     end
 
-    player.print({"logistics_simulation.unregistered_protected", prec.id or "?"})
+    info_print(player, {"logistics_simulation.unregistered_protected", prec.id or "?"})
     removed_any = true
   end
-  
-  -- Machines
+
   local mrec = storage.machines and storage.machines[unit]
   if mrec then
     Chests.update_marker(mrec, nil)
     storage.machines[unit] = nil
-    
+
     if log then
       log(string.format("EV;%d;UNMACH;%s;%d", game.tick, mrec.id or "?", unit))
     end
-    
-    player.print({"logistics_simulation.unregistered_registry", mrec.id or "?"})
+
+    info_print(player, {"logistics_simulation.unregistered_registry", mrec.id or "?"})
     removed_any = true
   end
 
-  if not removed_any then
-    player.print({"logistics_simulation.unregistered_none"})
-    
-    if log then
-      log(string.format("EV;%d;UNSEL;NONE;%d", game.tick, unit))
-    end
+  if removed_any then
+    storage.marker_dirty = true
+    return
+  end
+
+  info_print(player, {"logistics_simulation.unregistered_none"})
+
+  if log then
+    log(string.format("EV;%d;UNSEL;NONE;%d", game.tick, unit))
   end
 end
 
--- ----------------------------
--- Public: Clear markers in a list
--- ----------------------------
+-- -----------------------------------------
+-- Public: Clear Markers
+-- -----------------------------------------
+
 function Chests.clear_markers(list)
   if not list then return end
   for _, rec in pairs(list) do
@@ -328,9 +419,10 @@ function Chests.clear_markers(list)
   end
 end
 
--- ----------------------------
--- Public: Reset list helper
--- ----------------------------
+-- -----------------------------------------
+-- Public: Reset List
+-- -----------------------------------------
+
 function Chests.reset_list(mode)
   if not storage or not mode then return end
 
@@ -338,6 +430,7 @@ function Chests.reset_list(mode)
     Chests.clear_markers(storage.registry)
     storage.registry = {}
     storage.next_chest_id = 1
+    storage.marker_dirty = true
     return
   end
 
@@ -345,6 +438,7 @@ function Chests.reset_list(mode)
     Chests.clear_markers(storage.machines)
     storage.machines = {}
     storage.next_machine_id = 1
+    storage.marker_dirty = true
     return
   end
 
@@ -352,23 +446,35 @@ function Chests.reset_list(mode)
     Chests.clear_markers(storage.protected)
     storage.protected = {}
     storage.next_protect_id = 1
+    storage.marker_dirty = true
     return
   end
 end
 
--- ----------------------------
--- Public: Reset multiple lists
--- ----------------------------
+-- -----------------------------------------
+-- Public: Reset Multiple Lists
+-- -----------------------------------------
+
 function Chests.reset_lists(opts)
   if not opts or not storage then return end
+
+  local any = false
+
   if opts.chests then
     Chests.reset_list("chests")
+    any = true
   end
   if opts.machines then
     Chests.reset_list("machines")
+    any = true
   end
   if opts.protected then
     Chests.reset_list("protected")
+    any = true
+  end
+
+  if any then
+    storage.marker_dirty = true
   end
 end
 

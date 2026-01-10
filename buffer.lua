@@ -2,26 +2,22 @@
 -- LogSim (Factorio 2.0)
 -- Buffer Module
 -- (Buffer lines, paging/windowing, GUI refresh throttling)
+--
 -- Version 0.5.0 first introduced in LogSim 0.5.0
 -- Version 0.5.2 improved race condition handling & player cleanup
---
--- Responsibilities:
---  - storage defaults: buffer_lines, buffer_view, gui_dirty, perline_counter
---  - append_line / append_multiline
---  - paging/window functions: compute_tail_window, fit_window_to_chars,
---    fit_window_forward_to_chars, get_text_range
---  - throttled GUI refresh: tick_refresh_open_guis, refresh_for_player
---  - cleanup_disconnected_players (NEW in 0.5.2)
+-- Version 0.5.3 STATIC mode localization
+-- Version 0.5.4 protocol-aware UI (STATIC/LIVE mode)
 -- =========================================
 
 local M = require("config")
 
 local Buffer = {}
-Buffer.version = "0.5.2"
+Buffer.version = "0.5.4"
 
 -- -----------------------------------------
 -- Defaults
 -- -----------------------------------------
+
 function Buffer.ensure_defaults()
   storage.buffer_lines     = storage.buffer_lines or {}
   storage.buffer_view      = storage.buffer_view or {}
@@ -33,12 +29,12 @@ end
 -- -----------------------------------------
 -- Basics
 -- -----------------------------------------
+
 function Buffer.count()
   return (storage.buffer_lines and #storage.buffer_lines) or 0
 end
 
 function Buffer.mark_dirty_for_open_guis()
-  -- Mark only players with open buffer GUI
   for _, player in pairs(game.connected_players) do
     local frame = player.gui.screen[M.GUI_BUFFER_FRAME]
     if frame and frame.valid then
@@ -70,6 +66,7 @@ end
 -- -----------------------------------------
 -- Window / Paging
 -- -----------------------------------------
+
 function Buffer.get_text_range(start_line, end_line)
   Buffer.ensure_defaults()
 
@@ -106,7 +103,6 @@ function Buffer.compute_tail_window(max_chars)
   return start, n
 end
 
--- Fit backwards (end fixed, start moves up)
 function Buffer.fit_window_to_chars(end_line, max_chars)
   Buffer.ensure_defaults()
 
@@ -128,7 +124,6 @@ function Buffer.fit_window_to_chars(end_line, max_chars)
   return start, end_line
 end
 
--- Fit forwards (start fixed, end gets truncated)
 function Buffer.fit_window_forward_to_chars(start_line, end_limit, max_chars)
   Buffer.ensure_defaults()
 
@@ -153,8 +148,9 @@ function Buffer.fit_window_forward_to_chars(start_line, end_limit, max_chars)
 end
 
 -- -----------------------------------------
--- View state per player
+-- View State per Player
 -- -----------------------------------------
+
 function Buffer.ensure_view(player_index)
   Buffer.ensure_defaults()
 
@@ -174,8 +170,9 @@ function Buffer.ensure_view(player_index)
 end
 
 -- -----------------------------------------
--- NEW: Cleanup disconnected players
+-- Cleanup Disconnected Players
 -- -----------------------------------------
+
 function Buffer.cleanup_disconnected_players()
   if not storage.buffer_view then return end
   
@@ -184,7 +181,6 @@ function Buffer.cleanup_disconnected_players()
     connected[p.index] = true
   end
   
-  -- Cleanup view states and dirty flags
   for idx, _ in pairs(storage.buffer_view) do
     if not connected[idx] then
       storage.buffer_view[idx] = nil
@@ -201,32 +197,36 @@ function Buffer.cleanup_disconnected_players()
 end
 
 -- -----------------------------------------
--- GUI Refresh (improved robustness in 0.5.2)
+-- GUI Refresh
 -- -----------------------------------------
+
 function Buffer.refresh_for_player(player, force_text_redraw)
   if not (player and player.valid) then return end
   Buffer.ensure_defaults()
 
   local frame = player.gui.screen[M.GUI_BUFFER_FRAME]
-  if not (frame and frame.valid) then 
-    -- GUI was closed, cleanup view state
+  if not (frame and frame.valid) then
     storage.buffer_view[player.index] = nil
     storage.gui_dirty[player.index] = false
-    return 
+    return
   end
 
   local box = frame[M.GUI_BUFFER_BOX]
-  if not (box and box.valid) then 
-    -- Box missing, cleanup
+  if not (box and box.valid) then
     storage.buffer_view[player.index] = nil
     storage.gui_dirty[player.index] = false
-    return 
+    return
   end
 
   local toolbar = frame.logsim_buffer_toolbar
   if not (toolbar and toolbar.valid) then return end
 
   local view = Buffer.ensure_view(player.index)
+
+  local prot_on = (storage.protocol_active == true)
+  if not prot_on then
+    view.follow = false
+  end
 
   if view.follow then
     local s, e = Buffer.compute_tail_window(M.TEXT_MAX)
@@ -242,43 +242,44 @@ function Buffer.refresh_for_player(player, force_text_redraw)
   if need_text then
     local prefix = (view.start_line > 1) and "...(truncated)\n" or ""
     local text = prefix .. Buffer.get_text_range(view.start_line, view.end_line)
-    
-    -- Improved race condition handling
-    if box and box.valid then
-      local ok, err = pcall(function()
+
+    local ok = pcall(function()
+      if box and box.valid then
         box.text = text
-      end)
-      if not ok then
-        -- Failed to update, cleanup and return
-        storage.gui_dirty[player.index] = false
-        return
       end
-    else
-      -- Box became invalid during processing
-      storage.buffer_view[player.index] = nil
+    end)
+
+    if not ok then
       storage.gui_dirty[player.index] = false
       return
     end
-    
+
     view.last_start = view.start_line
     view.last_end   = view.end_line
   end
 
   local live = toolbar[M.GUI_BTN_TAIL]
   if live and live.valid and live.type == "button" then
-    if view.follow then
-      live.style = "confirm_button"
-      live.caption = {"logistics_simulation.buffer_live"}
-      live.tooltip = {"logistics_simulation.buffer_live_tooltip"}
-    else
+    if not prot_on then
+      live.enabled = false
       live.style = "button"
-      live.caption = {"logistics_simulation.buffer_live"}
-      live.tooltip = {"logistics_simulation.buffer_paused_tooltip"}
+      live.caption = {"logistics_simulation.buffer_static"}
+      live.tooltip = {"logistics_simulation.buffer_static_tooltip"}
+    else
+      live.enabled = true
+      if view.follow then
+        live.style = "confirm_button"
+        live.caption = {"logistics_simulation.buffer_live"}
+        live.tooltip = {"logistics_simulation.buffer_live_tooltip"}
+      else
+        live.style = "button"
+        live.caption = {"logistics_simulation.buffer_live"}
+        live.tooltip = {"logistics_simulation.buffer_paused_tooltip"}
+      end
     end
   end
 end
 
--- Called in on_tick; refreshes open GUIs max every M.GUI_REFRESH_TICKS
 function Buffer.tick_refresh_open_guis(tick)
   Buffer.ensure_defaults()
   tick = tick or game.tick
@@ -287,7 +288,6 @@ function Buffer.tick_refresh_open_guis(tick)
     return
   end
 
-  -- Only if someone is dirty
   local any = false
   for _, v in pairs(storage.gui_dirty) do
     if v then any = true; break end

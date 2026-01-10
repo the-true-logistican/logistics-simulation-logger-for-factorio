@@ -1,6 +1,6 @@
 -- =========================================
 -- LogSim (Factorio 2.0) 
--- Logging&Trace Module for Logistics Simulation
+-- Logging & Trace Module for Logistics Simulation
 -- (String generation, no side effects)
 --
 -- Version 0.3.0 first für LogSim 0.3.0
@@ -8,6 +8,7 @@
 -- Version 0.3.2 machines finished products
 -- Version 0.3.3 simlog.M.ITEM_ALIASES
 -- Version 0.5.2 multi-surface support
+-- Version 0.5.4 optimized power statistics (multi-network), string operations
 -- =========================================
 
 local M = require("config")
@@ -17,7 +18,7 @@ local UI = require("ui")
 local Chests = require("chests")
 
 local SimLog = {}
-SimLog.version = "0.5.2"
+SimLog.version = "0.5.4"
 
 SimLog.MACHINE_STATE = {
   RUN       = "RUN",
@@ -80,53 +81,59 @@ end
 function SimLog.get_power_w_1s(surface)
   if not surface then return nil end
 
-  local stats = surface.global_electric_network_statistics
-  if not stats then
-    surface.create_global_electric_network()
-    stats = surface.global_electric_network_statistics
-  end
-  if not stats then return nil end
-
   local precision = defines.flow_precision_index.one_minute
   local samples = M.POWER_SAMPLES
   local sum_samples = 0.0
 
-  for i = 1, samples do
-    local sample_total = 0.0
-
-    for proto, _ in pairs(stats.input_counts or {}) do
-      sample_total = sample_total + stats.get_flow_count{
-        name = proto,
-        category = "input",
-        precision_index = precision,
-        sample_index = i
-      }
+  local networks = surface.find_entities_filtered{type = "electric-pole"}
+  local seen_networks = {}
+  
+  for _, pole in pairs(networks) do
+    if pole.valid and pole.electric_network_id then
+      local net_id = pole.electric_network_id
+      
+      if not seen_networks[net_id] then
+        seen_networks[net_id] = true
+        
+        local stats = pole.electric_network_statistics
+        if stats then
+          for i = 1, samples do
+            local sample_total = 0.0
+            
+            for proto, _ in pairs(stats.input_counts or {}) do
+              sample_total = sample_total + stats.get_flow_count{
+                name = proto,
+                category = "input",
+                precision_index = precision,
+                sample_index = i
+              }
+            end
+            
+            sum_samples = sum_samples + sample_total
+          end
+        end
+      end
     end
-
-    sum_samples = sum_samples + sample_total
   end
-
+  
   return sum_samples / samples
 end
 
--- Begin of a line (telegram)
 function SimLog.begin_telegram(tick, surface, force)
   storage.perline_counter = (storage.perline_counter or 0) + 1
   local line_counter = storage.perline_counter
+  
   local parts = {}
-  parts[#parts+1] = tostring(line_counter) .. " " .. "tick=" .. tostring(tick)
-  parts[#parts+1] = "0000"  -- Placeholder for total length (4 digits)
+  parts[#parts+1] = table.concat({ tostring(line_counter), " tick=", tostring(tick) })
+  parts[#parts+1] = "0000"
  
-  -- Add surface name for multi-surface tracking
   if surface and surface.valid then
     parts[#parts+1] = "SURF:" .. tostring(surface.name)
   end
   
-  -- Power 
   local pwr = SimLog.get_power_w_1s(surface)
   parts[#parts+1] = pwr and ("PWR:" .. string.format("%.0f", pwr)) or "PWR:NA"
   
-  -- Pollution (no leading semicolon)
   local pol = SimLog.get_pollution_per_s(surface)
   if pol then
     parts[#parts+1] = string.format("POL=%.2f,%.2f,%+.2f", pol.produced, pol.absorbed, pol.delta)
@@ -137,7 +144,6 @@ function SimLog.begin_telegram(tick, surface, force)
   return parts
 end
 
--- End of a line (telegram)
 function SimLog.end_telegram(parts)
   local s = table.concat(parts, ";")
   local n = #s
@@ -146,7 +152,6 @@ function SimLog.end_telegram(parts)
   return table.concat(parts, ";")
 end
 
--- Build sorted output string from list
 function SimLog.build_string(list, resolve_fn, encode_fn)
   if not list or next(list) == nil then return "" end
 
@@ -155,7 +160,6 @@ function SimLog.build_string(list, resolve_fn, encode_fn)
     arr[#arr+1] = rec
   end
 
-  -- Stable sort (primary by id, fallback unit_number)
   table.sort(arr, function(a, b)
     local aid = a.id or ""
     local bid = b.id or ""
@@ -173,7 +177,6 @@ function SimLog.build_string(list, resolve_fn, encode_fn)
   return table.concat(segs, ";")
 end
 
--- NEW: Build string filtered by surface
 function SimLog.build_string_for_surface(list, surface_index, resolve_fn, encode_fn)
   if not list or next(list) == nil then return "" end
 
@@ -186,7 +189,6 @@ function SimLog.build_string_for_surface(list, surface_index, resolve_fn, encode
 
   if #arr == 0 then return "" end
 
-  -- Stable sort (primary by id, fallback unit_number)
   table.sort(arr, function(a, b)
     local aid = a.id or ""
     local bid = b.id or ""
@@ -209,13 +211,11 @@ function SimLog.encode_machine(rec, ent)
     return rec.id .. "=MISSING"
   end
 
-  -- Local short-name function
   local function short_name(name)
     if not name then return "" end
     return M.ITEM_ALIASES[name] or name
   end
 
-  -- Status
   local mapped = SimLog.STATUS_MAP[ent.status] or SimLog.MACHINE_STATE.UNK
   if not mapped then
     local sname = "?"
@@ -225,7 +225,6 @@ function SimLog.encode_machine(rec, ent)
     mapped = SimLog.MACHINE_STATE.UNK .. "(" .. tostring(sname) .. ":" .. tostring(ent.status) .. ")"
   end
 
-  -- Recipe / Products
   local prod_str = "NO_RECIPE"
   local recipe = nil
 
@@ -240,7 +239,6 @@ function SimLog.encode_machine(rec, ent)
       if p and p.name then
         local pname = short_name(p.name)
 
-        -- Append quality only if present AND not "normal"
         if p.quality and p.quality ~= "normal" then
           pname = pname .. "@" .. tostring(p.quality)
         end
@@ -256,14 +254,21 @@ function SimLog.encode_machine(rec, ent)
     end
   end
 
-  -- Production counter
   local finished = nil
   local ok = pcall(function()
     finished = ent.products_finished
   end)
   local fin_str = (ok and finished ~= nil) and tostring(finished) or "NA"
 
-  return rec.id .. ":" .. mapped .. "|" .. prod_str .. "=" .. fin_str
+  local out = {}
+  out[1] = rec.id
+  out[2] = ":"
+  out[3] = mapped
+  out[4] = "|"
+  out[5] = prod_str
+  out[6] = "="
+  out[7] = fin_str
+  return table.concat(out)
 end
 
 function SimLog.encode_chest(rec, ent)
@@ -284,25 +289,20 @@ function SimLog.encode_chest(rec, ent)
   local items = {}
   local any = false
 
-  -- Local short-name function
   local function short_name(name)
     if not name then return "" end
     return M.ITEM_ALIASES[name] or name
   end
 
-  -- Decode contents (supports Factorio 1.x and 2.x with Quality)
   for k, v in pairs(contents) do
     local item_name = nil
     local quality = nil
     local count = 0
 
-    -- Case A: List of tables (Factorio 2.x / Quality)
     if type(k) == "number" and type(v) == "table" then
       item_name = v.name or v.item
       quality   = v.quality or v.quality_name
       count     = v.count or v.amount or 0
-
-    -- Case B: Map structure
     else
       if type(k) == "string" then
         item_name = k
@@ -340,7 +340,11 @@ function SimLog.encode_chest(rec, ent)
     return rec.id .. ":LEER=0"
   end
 
-  return rec.id .. ":" .. table.concat(items, "|")
+  local out = {}
+  out[1] = rec.id
+  out[2] = ":"
+  out[3] = table.concat(items, "|")
+  return table.concat(out)
 end
 
 function get_logger_version()
