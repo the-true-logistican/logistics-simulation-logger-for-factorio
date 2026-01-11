@@ -28,6 +28,10 @@ local function is_chest(ent)
   return ent and ent.valid and (ent.type == "container" or ent.type == "logistic-container")
 end
 
+local function is_tank(ent)
+  return ent and ent.valid and ent.type == "storage-tank"
+end
+
 local function is_machine(ent)
   return ent and ent.valid and SUPPORTED_MACHINE_TYPES[ent.type] == true
 end
@@ -142,6 +146,10 @@ function Chests.register_selected(player, log)
     return Chests.register_chest(player, log)
   end
 
+  if is_tank(ent) then
+    return Chests.register_tank(player, log)
+  end
+
   if is_machine(ent) then
     return Chests.register_machine(player, log)
   end
@@ -234,6 +242,58 @@ function Chests.register_chest(player, log)
     ))
   end
 
+  local msg = {"logistics_simulation.registered_chest", id}
+  info_print(player, msg)
+  fly(player, ent, msg)
+  info_print(player, {"logistics_simulation.show_buffer"})
+end
+
+-- -----------------------------------------
+-- Public: Register Tank
+-- -----------------------------------------
+
+function Chests.register_tank(player, log)
+  if not Chests.check_selected_entity(player) then return end
+
+  local ent = player.selected
+  if ent.type ~= "storage-tank" then
+    info_print(player, {"logistics_simulation.no_reg_entity"})
+    return
+  end
+
+  if storage.registry[ent.unit_number] then
+    -- ggf. eigene Locale-Message später; minimal: reuse
+    info_print(player, {"logistics_simulation.already_registered_chest"})
+    return
+  end
+
+  local id = string.format("T%02d", storage.next_tank_id)
+  storage.next_tank_id = storage.next_tank_id + 1
+
+  local rec = {
+    id = id,
+    unit_number = ent.unit_number,
+    name = ent.name,
+    kind = "tank", -- wichtig für Debug/Erweiterungen, optional
+    surface_index = ent.surface.index,
+    position = { x = ent.position.x, y = ent.position.y },
+    marker_circle_id = nil,
+    marker_text_id = nil
+  }
+
+  storage.registry[ent.unit_number] = rec
+
+  Chests.update_marker(rec, ent)
+  storage.marker_dirty = true
+
+  if log then
+    log(string.format(
+      "EV;%d;REG_TANK;id=%s;unit=%d;name=%s;x=%.1f;y=%.1f",
+      game.tick, id, ent.unit_number, ent.name, ent.position.x, ent.position.y
+    ))
+  end
+
+  -- minimal: reuse chest message (kannst du später sauber lokalisieren)
   local msg = {"logistics_simulation.registered_chest", id}
   info_print(player, msg)
   fly(player, ent, msg)

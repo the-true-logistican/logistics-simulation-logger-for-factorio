@@ -2,17 +2,7 @@
 -- LogSim (Factorio 2.0) 
 -- Main Control 
 --
--- Version 0.1.0 first für LogSim 
--- Version 0.2.0 first modularisation
--- Version 0.3.0 machines too
--- Version 0.4.0 power, pollution, help etc.
--- Version 0.4.1 code optimisation
--- Version 0.4.2 flexible buffer display
--- Version 0.4.3 reorganise code
--- Version 0.5.0 locale de/en; buffer module
--- Version 0.5.2 multiplayer & multi-surface stability (on_load fix)
--- Version 0.5.3 statistics reset support, localized STATIC mode
--- Version 0.5.4 commands (/gp, /prot, /info), flying text, performance optimization
+-- Version 0.6.0 blueprint inventory extraction with cost calculation
 -- =========================================
 
 local DEBUG = true
@@ -23,6 +13,11 @@ local R = require("reset")
 local UI = require("ui")
 local Chests = require("chests")
 local SimLog = require("simlog")
+local ItemCost = require("itemcost")
+local Blueprint = require("blueprint")
+
+-- Blueprint inventory: session only (not persistent) - REMOVED, moved to blueprint.lua
+-- bp_session moved to blueprint.lua module
 
 -- Forward declarations
 local debug_print
@@ -36,7 +31,7 @@ local cleanup_entity_from_registries
 local clear_invalid_rendering_objects
 
 -- -----------------------------------------
--- Implementations
+-- Helper Functions
 -- -----------------------------------------
 
 resolve_entity = function(rec)
@@ -96,11 +91,14 @@ debug_print = function(msg)
   end
 end
 
+
 info_print = function(player, msg)
   if not storage.info_mode then return end
   if not (player and player.valid) then return end
   player.print(msg)
 end
+
+
 
 ensure_storage_defaults = function()
   storage.run_name = storage.run_name or nil
@@ -120,6 +118,7 @@ ensure_storage_defaults = function()
 
   storage.registry = storage.registry or {}
   storage.next_chest_id = storage.next_chest_id or 1
+  storage.next_tank_id = storage.next_tank_id or 1
 
   storage.machines = storage.machines or {}
   storage.next_machine_id = storage.next_machine_id or 1
@@ -222,7 +221,7 @@ cleanup_entity_from_registries = function(unit_number, log_fn)
 end
 
 -- -----------------------------------------
--- Events
+-- Lifecycle Events
 -- -----------------------------------------
 
 script.on_init(function()
@@ -316,8 +315,15 @@ end)
 script.on_event(defines.events.on_gui_closed, function(event)
   local element = event.element
   if not (element and element.valid) then return end
-
+  
+  -- Close buffer window
   if element.name == M.GUI_BUFFER_FRAME then
+    element.destroy()
+    return
+  end
+  
+  -- Close inventory window
+  if element.name == "logsim_invwin" then
     element.destroy()
     return
   end
@@ -434,7 +440,7 @@ script.on_event(defines.events.on_tick, function(event)
     clear_invalid_rendering_objects()
   end
 
-  if (event.tick % 600) == 0 then
+  if (event.tick % M.CLEANUP_INTERVAL_TICKS) == 0 then
     Buffer.cleanup_disconnected_players()
   end
 
@@ -445,9 +451,11 @@ script.on_event(defines.events.on_tick, function(event)
 
   Buffer.tick_refresh_open_guis(event.tick)
 
+  -- Clean up blueprint sidecars (delegated to blueprint module)
+  Blueprint.tick_cleanup_sidecars()
+
   if not storage.protocol_active then return end
   if not tick_should_log() then return end
-
   tick_build_and_append_logline()
 end)
 
@@ -658,6 +666,27 @@ local function click_help_close(event)
   if hf and hf.valid then hf.destroy() end
 end
 
+-- Blueprint inventory extraction with cost calculation - MOVED TO blueprint.lua
+-- See Blueprint.click_bp_extract()
+
+local function click_invwin_copy(event)
+  local player = game.players[event.player_index]
+  local frame = player.gui.screen["logsim_invwin"]
+  if not (frame and frame.valid) then return end
+  
+  local box = frame["logsim_invwin_box"]
+  if not (box and box.valid) then return end
+  
+  box.focus()
+  box.select_all()
+  player.print({"logistics_simulation.msg_copied"})
+end
+
+local function click_invwin_close(event)
+  local player = game.players[event.player_index]
+  UI.close_inventory_window(player)
+end
+
 script.on_event(defines.events.on_gui_click, function(event)
   local element = event.element
   if not (element and element.valid) then return end
@@ -682,5 +711,17 @@ script.on_event(defines.events.on_gui_click, function(event)
     click_help_toggle(event)
   elseif name == M.GUI_HELP_CLOSE then
     click_help_close(event)
+  elseif name == M.GUI_BP_EXTRACTBTN then
+    Blueprint.click_bp_extract(event)
+  elseif name == "logsim_invwin_copy" then
+    click_invwin_copy(event)
+  elseif name == "logsim_invwin_close" or name == "logsim_invwin_close_x" then
+    click_invwin_close(event)
   end
 end)
+
+-- -----------------------------------------
+-- Blueprint GUI opened (delegated to blueprint module)
+-- -----------------------------------------
+
+script.on_event(defines.events.on_gui_opened, Blueprint.on_gui_opened)

@@ -3,12 +3,14 @@
 -- UI Module with Locale Support
 -- Version 0.3.0
 -- Version 0.5.3 statistics reset checkbox
+-- Version 0.6.0 blueprint inventory support, config constants
+-- Version 0.6.1 full localization (no hard-coded strings)
 -- =========================================
 
 local M = require("config")
 
 local UI = {}
-UI.version = "0.5.3"
+UI.version = "0.6.1"
 
 function UI.show_runname_gui(player)
   if player.gui.screen.logsim_runname then return end
@@ -129,8 +131,8 @@ function UI.show_buffer_gui(player)
   box.read_only = true
   box.word_wrap = false
 
-  box.style.width = 900
-  box.style.height = 500
+  box.style.width = M.GUI_BUFFER_WIDTH
+  box.style.height = M.GUI_BUFFER_HEIGHT
   
   storage.buffer_view = storage.buffer_view or {}
   storage.buffer_view[player.index] = { start_line = 1, end_line = 0, follow = true }
@@ -149,15 +151,15 @@ function UI.show_help_gui(player)
   add_titlebar(frame, {"logistics_simulation.help_title"}, M.GUI_HELP_CLOSE)
 
   local pane = frame.add{ type = "scroll-pane" }
-  pane.style.maximal_height = 500
-  pane.style.width = 900
+  pane.style.maximal_height = M.GUI_HELP_HEIGHT
+  pane.style.width = M.GUI_HELP_WIDTH
 
   local lbl = pane.add{
     type = "label",
     caption = {"logistics_simulation.help_text"}
   }
   lbl.style.single_line = false
-  lbl.style.maximal_width = 880
+  lbl.style.maximal_width = M.GUI_HELP_LABEL_WIDTH
 end
 
 function UI.show_reset_dialog(player)
@@ -173,8 +175,8 @@ function UI.show_reset_dialog(player)
   add_titlebar(frame, {"logistics_simulation.reset_dialog_title"}, M.GUI_RESET_CANCEL)
 
   local content = frame.add{ type = "flow", direction = "vertical" }
-  content.style.vertical_spacing = 8
-  content.style.padding = 12
+  content.style.vertical_spacing = M.GUI_CONTENT_SPACING
+  content.style.padding = M.GUI_CONTENT_PADDING
 
   content.add{ 
     type = "label", 
@@ -216,7 +218,7 @@ function UI.show_reset_dialog(player)
     caption = {"logistics_simulation.reset_protected"}
   }
   
-  -- NEW: Statistics reset checkbox (v0.5.3)
+  -- Statistics reset checkbox (v0.5.3)
   content.add{
     type = "checkbox",
     name = M.GUI_RESET_CHK_STATS,
@@ -227,7 +229,7 @@ function UI.show_reset_dialog(player)
   content.add{ type = "line" }
 
   local name_row = content.add{ type = "flow", direction = "horizontal" }
-  name_row.style.horizontal_spacing = 8
+  name_row.style.horizontal_spacing = M.GUI_BUTTON_SPACING
 
   name_row.add{ 
     type = "label", 
@@ -240,12 +242,12 @@ function UI.show_reset_dialog(player)
     name = M.GUI_RESET_NAME_FIELD,
     text = old
   }
-  name_field.style.width = 300
+  name_field.style.width = M.GUI_RESET_TEXTFIELD_WIDTH
 
   local buttons = frame.add{ type = "flow", direction = "horizontal" }
   buttons.style.horizontal_align = "right"
-  buttons.style.padding = 12
-  buttons.style.horizontal_spacing = 8
+  buttons.style.padding = M.GUI_CONTENT_PADDING
+  buttons.style.horizontal_spacing = M.GUI_BUTTON_SPACING
 
   buttons.add{ 
     type = "button", 
@@ -299,9 +301,118 @@ function UI.read_reset_dialog(player)
     del_chests   = chk(M.GUI_RESET_CHK_CHESTS),
     del_machines = chk(M.GUI_RESET_CHK_MACHINES),
     del_prot     = chk(M.GUI_RESET_CHK_PROT),
-    del_stats    = chk(M.GUI_RESET_CHK_STATS),  -- NEW (v0.5.3)
+    del_stats    = chk(M.GUI_RESET_CHK_STATS),
     new_name     = txt(M.GUI_RESET_NAME_FIELD),
   }
+end
+
+-- Blueprint inventory sidecar (v0.6.0)
+function UI.show_blueprint_sidecar(player)
+  local root = player.gui.screen
+  local old = root[M.GUI_BP_SIDECAR]
+  if old and old.valid then old.destroy() end
+
+  local scale = player.display_scale or 1
+
+  local frame = root.add{
+    type = "frame",
+    name = M.GUI_BP_SIDECAR,
+    direction = "vertical",
+    caption = {"logistics_simulation.bp_inventory_title"}
+  }
+
+  frame.style.padding = M.GUI_FRAME_PADDING
+  frame.style.minimal_width = M.GUI_BP_SIDECAR_WIDTH
+  frame.style.maximal_width = M.GUI_BP_SIDECAR_WIDTH
+
+  local flow = frame.add{ type="flow", direction="vertical" }
+  flow.add{
+    type = "label",
+    caption = {"logistics_simulation.bp_inventory_hint"}
+  }
+
+  flow.add{
+    type = "button",
+    name = M.GUI_BP_EXTRACTBTN,
+    caption = {"logistics_simulation.bp_extract_button"}
+  }
+
+  -- Position: top left (safe, doesn't collide with minimap)
+  frame.location = { 
+    x = math.floor(M.GUI_BP_SIDECAR_MARGIN * scale), 
+    y = math.floor(M.GUI_BP_SIDECAR_Y_OFFSET * scale) 
+  }
+end
+
+function UI.hide_blueprint_sidecar(player)
+  local root = player.gui.screen
+  local el = root[M.GUI_BP_SIDECAR]
+  if el and el.valid then el.destroy() end
+end
+
+-- -----------------------------------------
+-- Blueprint Inventory Result Window (autonomous)
+-- Version 0.6.1 - fully localized
+-- -----------------------------------------
+
+function UI.show_inventory_window(player, text)
+  local root = player.gui.screen
+
+  -- Wenn schon offen: nur Text aktualisieren + nach vorne holen
+  local frame = root[M.GUI_INV_FRAME]
+  if frame and frame.valid then
+    local box = frame[M.GUI_INV_BOX]
+    if box and box.valid then box.text = text or "" end
+    frame.bring_to_front()
+    return
+  end
+
+  frame = root.add{
+    type = "frame",
+    name = M.GUI_INV_FRAME,
+    direction = "vertical"
+  }
+  frame.auto_center = true
+
+  -- Titelzeile mit X (vollständig lokalisiert)
+  add_titlebar(frame, {"logistics_simulation.invwin_title"}, M.GUI_INV_CLOSE_X)
+
+  -- Toolbar: nur Copy + Close (lokalisiert)
+  local top = frame.add{
+    type = "flow",
+    name = "logsim_invwin_toolbar",
+    direction = "horizontal"
+  }
+
+  top.add{
+    type = "button",
+    name = M.GUI_INV_BTN_COPY,
+    caption = {"logistics_simulation.invwin_copy"}
+  }
+
+  top.add{
+    type = "button",
+    name = M.GUI_INV_BTN_CLOSE,
+    caption = {"logistics_simulation.invwin_close"}
+  }
+
+  -- Content: Textbox für Inventur-Daten (read-only)
+  local box = frame.add{
+    type = "text-box",
+    name = M.GUI_INV_BOX,
+    text = text or ""
+  }
+  box.read_only = true
+  box.word_wrap = false
+
+  -- Größe: nimm die Buffer-Dimensionen
+  box.style.width  = M.GUI_BUFFER_WIDTH
+  box.style.height = M.GUI_BUFFER_HEIGHT
+end
+
+function UI.close_inventory_window(player)
+  local f = player.gui.screen[M.GUI_INV_FRAME]
+  if f and f.valid then f.destroy() end
 end
 
 return UI

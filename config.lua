@@ -3,11 +3,12 @@
 -- Configuration Module
 --
 -- Version 0.3.0 - Locale support
+-- Version 0.6.0 - GUI constants, blueprint inventory
 -- =========================================
 
 local M = {}
 
-M.version = "0.5.3"
+M.version = "0.6.0"
 
 -- =====================================
 -- Technical Configuration
@@ -22,6 +23,36 @@ M.TEXT_MAX = 150000
 M.CHUNK_SIZE = 32 
 M.MAX_TELEGRAM_LENGTH = 2000
 M.BUFFER_PAGE_LINES = 200
+
+-- Performance
+M.CLEANUP_INTERVAL_TICKS = 600  -- 10 seconds - cleanup disconnected players
+
+-- =====================================
+-- GUI Configuration
+-- =====================================
+
+-- Buffer Window
+M.GUI_BUFFER_WIDTH = 900
+M.GUI_BUFFER_HEIGHT = 500
+
+-- Help Window
+M.GUI_HELP_WIDTH = 900
+M.GUI_HELP_HEIGHT = 500
+M.GUI_HELP_LABEL_WIDTH = 880
+
+-- Reset Dialog
+M.GUI_RESET_TEXTFIELD_WIDTH = 300
+
+-- Blueprint Sidecar
+M.GUI_BP_SIDECAR_WIDTH = 260
+M.GUI_BP_SIDECAR_MARGIN = 12
+M.GUI_BP_SIDECAR_Y_OFFSET = 220
+
+-- Styling (Padding & Spacing)
+M.GUI_CONTENT_PADDING = 12
+M.GUI_CONTENT_SPACING = 8
+M.GUI_BUTTON_SPACING = 8
+M.GUI_FRAME_PADDING = 8
 
 -- =====================================
 -- GUI Element Names (internal)
@@ -53,6 +84,15 @@ M.GUI_BTN_OLDER = "logsim_buffer_older"
 M.GUI_BTN_TAIL  = "logsim_buffer_tail"
 M.GUI_BTN_NEWER = "logsim_buffer_newer"
 M.GUI_LBL_RANGE = "logsim_buffer_range"
+
+M.GUI_BP_SIDECAR    = "logsim_bp_sidecar"
+M.GUI_BP_EXTRACTBTN = "logsim_bp_extract"
+
+M.GUI_INV_FRAME = "logsim_invwin"
+M.GUI_INV_BOX = "logsim_invwin_box"
+M.GUI_INV_CLOSE_X = "logsim_invwin_close_x"
+M.GUI_INV_BTN_COPY = "logsim_invwin_copy"
+M.GUI_INV_BTN_CLOSE = "logsim_invwin_close"
 
 -- =====================================
 -- Item Aliases (for compact logging)

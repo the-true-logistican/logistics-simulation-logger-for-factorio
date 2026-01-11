@@ -63,6 +63,7 @@ local function reset_clear_chests(surface)
   local cleared = 0
   local skipped = 0
 
+  -- 1) normale Kisten
   local chests = surface.find_entities_filtered{
     type = {"container", "logistic-container"}
   }
@@ -75,6 +76,23 @@ local function reset_clear_chests(surface)
         local inv = ent.get_inventory(defines.inventory.chest)
         if inv and inv.valid then
           inv.clear()
+          cleared = cleared + 1
+        end
+      end
+    end
+  end
+
+  -- 2) NEU: Tanks (Fluids)
+  local tanks = surface.find_entities_filtered{ type = "storage-tank" }
+
+  for _, ent in ipairs(tanks) do
+    if ent.valid then
+      if is_protected(ent) then
+        skipped = skipped + 1
+      else
+        -- Factorio 2.x: Entities mit Fluidbox können i.d.R. so geleert werden
+        local ok = pcall(function() ent.clear_fluid_inside() end)
+        if ok then
           cleared = cleared + 1
         end
       end

@@ -39,15 +39,17 @@ local function add_status(map, key, value)
 end
 
 SimLog.STATUS_MAP = {}
-add_status(SimLog.STATUS_MAP, defines.entity_status.working,                      SimLog.MACHINE_STATE.RUN)
-add_status(SimLog.STATUS_MAP, defines.entity_status.no_power,                     SimLog.MACHINE_STATE.NO_POWER)
-add_status(SimLog.STATUS_MAP, defines.entity_status.low_power,                    SimLog.MACHINE_STATE.NO_POWER)
-add_status(SimLog.STATUS_MAP, defines.entity_status.disabled_by_control_behavior, SimLog.MACHINE_STATE.DISABLED)
-add_status(SimLog.STATUS_MAP, defines.entity_status.item_ingredient_shortage,     SimLog.MACHINE_STATE.WAIT_IN)
-add_status(SimLog.STATUS_MAP, defines.entity_status.fluid_ingredient_shortage,    SimLog.MACHINE_STATE.WAIT_IN)
-add_status(SimLog.STATUS_MAP, defines.entity_status.full_output,                  SimLog.MACHINE_STATE.OUT_FULL)
-add_status(SimLog.STATUS_MAP, defines.entity_status.no_recipe,                    SimLog.MACHINE_STATE.NO_RECIPE)
-add_status(SimLog.STATUS_MAP, defines.entity_status.idle,                         SimLog.MACHINE_STATE.IDLE)
+add_status(SimLog.STATUS_MAP, defines.entity_status.working,                          SimLog.MACHINE_STATE.RUN)
+add_status(SimLog.STATUS_MAP, defines.entity_status.no_power,                         SimLog.MACHINE_STATE.NO_POWER)
+add_status(SimLog.STATUS_MAP, defines.entity_status.low_power,                        SimLog.MACHINE_STATE.NO_POWER)
+add_status(SimLog.STATUS_MAP, defines.entity_status.disabled_by_control_behavior,     SimLog.MACHINE_STATE.DISABLED)
+add_status(SimLog.STATUS_MAP, defines.entity_status.item_ingredient_shortage,         SimLog.MACHINE_STATE.WAIT_IN)
+add_status(SimLog.STATUS_MAP, defines.entity_status.fluid_ingredient_shortage,        SimLog.MACHINE_STATE.WAIT_IN)
+add_status(SimLog.STATUS_MAP, defines.entity_status.full_output,                      SimLog.MACHINE_STATE.OUT_FULL)
+add_status(SimLog.STATUS_MAP, defines.entity_status.no_recipe,                        SimLog.MACHINE_STATE.NO_RECIPE)
+add_status(SimLog.STATUS_MAP, defines.entity_status.idle,                             SimLog.MACHINE_STATE.IDLE)
+add_status(SimLog.STATUS_MAP, defines.entity_status.waiting_for_space_in_destination, SimLog.MACHINE_STATE.OUT_FULL)
+add_status(SimLog.STATUS_MAP, defines.entity_status.not_enough_space_in_output,       SimLog.MACHINE_STATE.OUT_FULL)
 
 function SimLog.get_pollution_per_s(surface)
   local stats = surface and surface.pollution_statistics
@@ -216,7 +218,7 @@ function SimLog.encode_machine(rec, ent)
     return M.ITEM_ALIASES[name] or name
   end
 
-  local mapped = SimLog.STATUS_MAP[ent.status] or SimLog.MACHINE_STATE.UNK
+  local mapped = SimLog.STATUS_MAP[ent.status]
   if not mapped then
     local sname = "?"
     for k, v in pairs(defines.entity_status) do
@@ -225,33 +227,53 @@ function SimLog.encode_machine(rec, ent)
     mapped = SimLog.MACHINE_STATE.UNK .. "(" .. tostring(sname) .. ":" .. tostring(ent.status) .. ")"
   end
 
-  local prod_str = "NO_RECIPE"
+  -- Welche "Produkte" hat die Maschine?
+  -- Crafting-Maschinen: aus Recipe
+  -- Mining-Drills (inkl. Pumpjack): aus Mining-Target (Resource -> mineable products)
+  local prod_str = "NO_PRODUCTS"
   local recipe = nil
 
+  -- 1) Crafting-Rezept sicher holen (wirft bei mining-drill/pumpjack sonst Exception)
   if ent.get_recipe then
-    recipe = ent.get_recipe()
+    local ok, r = pcall(function() return ent.get_recipe() end)
+    if ok then recipe = r end
   end
 
-  if recipe and recipe.valid and recipe.products then
+  local function products_to_string(products)
+    if not products then return "NO_PRODUCTS" end
+
     local names = {}
-    for i = 1, #recipe.products do
-      local p = recipe.products[i]
+    for i = 1, #products do
+      local p = products[i]
       if p and p.name then
         local pname = short_name(p.name)
-
         if p.quality and p.quality ~= "normal" then
           pname = pname .. "@" .. tostring(p.quality)
         end
-
         names[#names + 1] = pname
       end
     end
 
-    if #names > 0 then
-      prod_str = table.concat(names, ",")
+    if #names == 0 then return "NO_PRODUCTS" end
+    return table.concat(names, ",")
+  end
+
+  -- 2) Wenn Recipe da ist: daraus Produkte
+  if recipe and recipe.valid and recipe.products then
+    prod_str = products_to_string(recipe.products)
+
+  -- 3) Sonst: mining-drill/pumpjack über Mining-Target
+  elseif ent.type == "mining-drill" then
+    local tgt = ent.mining_target
+    if tgt and tgt.valid and tgt.prototype and tgt.prototype.mineable_properties then
+      prod_str = products_to_string(tgt.prototype.mineable_properties.products)
     else
-      prod_str = "NO_PRODUCTS"
+      prod_str = "NO_TARGET"
     end
+
+  -- 4) Sonstige Maschinen ohne Recipe
+  else
+    prod_str = "NO_RECIPE"
   end
 
   local finished = nil
@@ -276,6 +298,30 @@ function SimLog.encode_chest(rec, ent)
     return rec.id .. ":MISSING=0"
   end
 
+  -- NEU: Tanks (Fluids) loggen
+  if ent.type == "storage-tank" then
+    local fluids = ent.get_fluid_contents() -- {["water"]=123.4, ...} (Factorio 2.x ok)
+    if not fluids or next(fluids) == nil then
+      return rec.id .. ":LEER=0"
+    end
+
+    local function short_name(name)
+      if not name then return "" end
+      return M.ITEM_ALIASES[name] or name
+    end
+
+    local items = {}
+    for fname, amount in pairs(fluids) do
+      local sname = short_name(fname)
+      -- Fluids können fractional sein → kompakt mit 1 Nachkommastelle
+      items[#items+1] = string.format("%s=%.1f", sname, tonumber(amount) or 0)
+    end
+
+    table.sort(items) -- stabile Ausgabe
+    return rec.id .. ":" .. table.concat(items, "|")
+  end
+
+  -- Alt: normale Kisten
   local inv = ent.get_inventory(defines.inventory.chest)
   if not (inv and inv.valid) then
     return rec.id .. ":NOINV=0"

@@ -7,12 +7,13 @@
 -- Version 0.5.2 improved race condition handling & player cleanup
 -- Version 0.5.3 STATIC mode localization
 -- Version 0.5.4 protocol-aware UI (STATIC/LIVE mode)
+-- Version 0.5.5 fully localized strings
 -- =========================================
 
 local M = require("config")
 
 local Buffer = {}
-Buffer.version = "0.5.4"
+Buffer.version = "0.5.5"
 
 -- -----------------------------------------
 -- Defaults
@@ -197,7 +198,7 @@ function Buffer.cleanup_disconnected_players()
 end
 
 -- -----------------------------------------
--- GUI Refresh
+-- GUI Refresh (v0.5.5 - localized prefix)
 -- -----------------------------------------
 
 function Buffer.refresh_for_player(player, force_text_redraw)
@@ -240,7 +241,19 @@ function Buffer.refresh_for_player(player, force_text_redraw)
     or view.last_end   ~= view.end_line
 
   if need_text then
-    local prefix = (view.start_line > 1) and "...(truncated)\n" or ""
+    -- LOCALIZED: Use locale key for truncation prefix
+    local prefix_msg = player.locale and {"logistics_simulation.buffer_static_prefix"} or "...(truncated)\n"
+   
+local prefix = ""
+
+-- Note: text-box content must be a plain string; LocalisedString needs async translation.
+-- Keep a simple prefix to avoid LuaPlayer.localised_string (not an API field).
+if view.start_line > 1 then
+  prefix = "...(truncated)\n"
+end
+
+local text = prefix .. Buffer.get_text_range(view.start_line, view.end_line)
+
     local text = prefix .. Buffer.get_text_range(view.start_line, view.end_line)
 
     local ok = pcall(function()
