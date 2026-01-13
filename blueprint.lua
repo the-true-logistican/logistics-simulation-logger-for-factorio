@@ -1,13 +1,16 @@
 -- =========================================
 -- LogSim (Factorio 2.0) 
 -- Blueprint Extraction Logic Module
--- Version 0.6.0
+-- Version 0.6.0 introduced
+-- Version 0.6.3 Clculate 
 -- =========================================
 
 local UI = require("ui")
 local ItemCost = require("itemcost")
+local Chests = require("chests")
 
 local Blueprint = {}
+  Blueprint.version = "0.6.3"
 
 -- Session storage (not persistent)
 local bp_session = {
@@ -255,8 +258,15 @@ function Blueprint.click_bp_extract(event)
   local costs = ItemCost.calculate_blueprint_cost(counts, player.force)
   costs.footprint = footprint
   
--- Display detailed breakdown (pass player for localized headers)
-  local txt = ItemCost.format_detailed_breakdown(costs, player)
+  -- Fixed assets (blueprint)
+  local fixed_txt = ItemCost.format_detailed_breakdown(costs, player)
+
+  -- Working capital portfolio (unit costs, amount=1)
+  local portfolio_set = ItemCost.collect_portfolio_items(storage, Chests.resolve_entity, player.force)
+  local unit_costs = ItemCost.calculate_unit_costs(portfolio_set, player.force)
+  local wc_txt = ItemCost.format_portfolio_unit_costs(unit_costs)
+
+  local txt = fixed_txt .. "\n\n" .. wc_txt
   UI.show_inventory_window(player, txt)
   
   -- Store in session

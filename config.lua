@@ -19,7 +19,7 @@ M.POWER_SAMPLES = 5           -- ~1.0s (5 * 0.2s)
 M.POLLUTION_SAMPLES = 5       -- ~1.0s (5 * 0.2s)
 M.GUI_REFRESH_TICKS = 10      -- throttle GUI refresh (ticks)
 M.BUFFER_MAX_LINES = 20000
-M.TEXT_MAX = 150000
+M.TEXT_MAX = 1500000
 M.CHUNK_SIZE = 32 
 M.MAX_TELEGRAM_LENGTH = 2000
 M.BUFFER_PAGE_LINES = 200
@@ -93,6 +93,18 @@ M.GUI_INV_BOX = "logsim_invwin_box"
 M.GUI_INV_CLOSE_X = "logsim_invwin_close_x"
 M.GUI_INV_BTN_COPY = "logsim_invwin_copy"
 M.GUI_INV_BTN_CLOSE = "logsim_invwin_close"
+
+-- GUI Configuration section:
+M.GUI_BTN_EXPORT = "logsim_buffer_export"
+M.GUI_BTN_EXPORT_CSV = "logsim_export_csv"
+M.GUI_BTN_EXPORT_JSON = "logsim_export_json"
+M.GUI_EXPORT_FRAME = "logsim_export_dialog"
+M.GUI_EXPORT_CLOSE = "logsim_export_close"
+M.GUI_EXPORT_FILENAME = "logsim_export_filename"
+
+-- Export configuration
+M.EXPORT_FOLDER = "logsim-exports"
+M.EXPORT_DEFAULT_NAME = "protocol"
 
 -- =====================================
 -- Item Aliases (for compact logging)

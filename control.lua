@@ -2,7 +2,20 @@
 -- LogSim (Factorio 2.0) 
 -- Main Control 
 --
+-- Version 0.1.0 first für LogSim 
+-- Version 0.2.0 first modularisation
+-- Version 0.3.0 machines too
+-- Version 0.4.0 power, pollution, help etc.
+-- Version 0.4.1 code optimisation
+-- Version 0.4.2 flexible buffer display
+-- Version 0.4.3 reorganise code
+-- Version 0.5.0 locale de/en; buffer module
+-- Version 0.5.2 multiplayer & multi-surface stability (on_load fix)
+-- Version 0.5.3 statistics reset support, localized STATIC mode
+-- Version 0.5.4 commands (/gp, /prot, /info), flying text, performance optimization
 -- Version 0.6.0 blueprint inventory extraction with cost calculation
+-- Version 0.6.1 locale de/en; debugging
+-- Version 0.6.2 export to file csv/json
 -- =========================================
 
 local DEBUG = true
@@ -15,6 +28,8 @@ local Chests = require("chests")
 local SimLog = require("simlog")
 local ItemCost = require("itemcost")
 local Blueprint = require("blueprint")
+local Export = require("export")
+
 
 -- Blueprint inventory: session only (not persistent) - REMOVED, moved to blueprint.lua
 -- bp_session moved to blueprint.lua module
@@ -516,6 +531,26 @@ script.on_event(
 -- GUI Click Handlers 
 -- -----------------------------------------
 
+local function click_buffer_export(event)
+  local player = game.players[event.player_index]
+  UI.show_export_dialog(player)
+end
+
+local function click_export_csv(event)
+  local player = game.players[event.player_index]
+  Export.export_csv(player)
+end
+
+local function click_export_json(event)
+  local player = game.players[event.player_index]
+  Export.export_json(player)
+end
+
+local function click_export_close(event)
+  local player = game.players[event.player_index]
+  UI.close_export_dialog(player)
+end
+
 local function click_runname_ok(event)
   local player = game.players[event.player_index]
   handle_runname_submit(player)
@@ -690,7 +725,6 @@ end
 script.on_event(defines.events.on_gui_click, function(event)
   local element = event.element
   if not (element and element.valid) then return end
-
   local name = element.name
 
   if name == "logsim_runname_ok" then
@@ -717,7 +751,15 @@ script.on_event(defines.events.on_gui_click, function(event)
     click_invwin_copy(event)
   elseif name == "logsim_invwin_close" or name == "logsim_invwin_close_x" then
     click_invwin_close(event)
-  end
+  elseif name == M.GUI_BTN_EXPORT then
+    click_buffer_export(event)
+  elseif name == M.GUI_BTN_EXPORT_CSV then
+    click_export_csv(event)
+  elseif name == M.GUI_BTN_EXPORT_JSON then
+    click_export_json(event)
+  elseif name == M.GUI_EXPORT_CLOSE then
+    click_export_close(event)
+  end 
 end)
 
 -- -----------------------------------------

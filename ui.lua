@@ -5,12 +5,13 @@
 -- Version 0.5.3 statistics reset checkbox
 -- Version 0.6.0 blueprint inventory support, config constants
 -- Version 0.6.1 full localization (no hard-coded strings)
+-- Version 0.6.2 Export implemented
 -- =========================================
 
 local M = require("config")
 
 local UI = {}
-UI.version = "0.6.1"
+UI.version = "0.6.2"
 
 function UI.show_runname_gui(player)
   if player.gui.screen.logsim_runname then return end
@@ -103,7 +104,15 @@ function UI.show_buffer_gui(player)
     type = "button", 
     name = M.GUI_BTN_COPY, 
     caption = {"logistics_simulation.buffer_copy"}
-  } 
+  }
+  
+  -- *** NEW: Export Button ***
+  top.add{
+    type = "button",
+    name = M.GUI_BTN_EXPORT,
+    caption = {"logistics_simulation.buffer_export"},
+    tooltip = {"logistics_simulation.buffer_export_tooltip"}
+  }
   
   top.add{ 
     type = "button", 
@@ -130,13 +139,110 @@ function UI.show_buffer_gui(player)
   }
   box.read_only = true
   box.word_wrap = false
-
   box.style.width = M.GUI_BUFFER_WIDTH
   box.style.height = M.GUI_BUFFER_HEIGHT
   
   storage.buffer_view = storage.buffer_view or {}
   storage.buffer_view[player.index] = { start_line = 1, end_line = 0, follow = true }
 end
+
+-- *** NEW: Export Dialog ***
+function UI.show_export_dialog(player)
+  if player.gui.screen[M.GUI_EXPORT_FRAME] then return end
+
+  local frame = player.gui.screen.add{
+    type = "frame",
+    name = M.GUI_EXPORT_FRAME,
+    direction = "vertical",
+    caption = {"logistics_simulation.export_dialog_title"}
+  }
+  frame.auto_center = true
+
+  local content = frame.add{ type = "flow", direction = "vertical" }
+  content.style.vertical_spacing = M.GUI_CONTENT_SPACING
+  content.style.padding = M.GUI_CONTENT_PADDING
+
+  -- Info label
+  content.add{
+    type = "label",
+    caption = {"logistics_simulation.export_dialog_info"}
+  }
+
+  -- Filename input
+  local name_flow = content.add{ type = "flow", direction = "horizontal" }
+  name_flow.add{
+    type = "label",
+    caption = {"logistics_simulation.export_filename_label"}
+  }
+
+  local default_name = storage.base_filename or 
+                       string.format("%s_%s", M.EXPORT_DEFAULT_NAME, 
+                                    os.date("%Y%m%d_%H%M%S"))
+  
+  local filename_field = name_flow.add{
+    type = "textfield",
+    name = M.GUI_EXPORT_FILENAME,
+    text = default_name
+  }
+  filename_field.style.width = 400
+
+  content.add{ type = "line" }
+
+  -- Format selection
+  content.add{
+    type = "label",
+    caption = {"logistics_simulation.export_format_label"},
+    style = "bold_label"
+  }
+
+  -- CSV option
+  local csv_flow = content.add{ type = "flow", direction = "horizontal" }
+  csv_flow.add{
+    type = "button",
+    name = M.GUI_BTN_EXPORT_CSV,
+    caption = {"logistics_simulation.export_csv"},
+    style = "confirm_button",
+    tooltip = {"logistics_simulation.export_csv_tooltip"}
+  }
+  csv_flow.add{
+    type = "label",
+    caption = {"logistics_simulation.export_csv_desc"}
+  }
+
+  -- JSON option
+  local json_flow = content.add{ type = "flow", direction = "horizontal" }
+  json_flow.add{
+    type = "button",
+    name = M.GUI_BTN_EXPORT_JSON,
+    caption = {"logistics_simulation.export_json"},
+    style = "confirm_button",
+    tooltip = {"logistics_simulation.export_json_tooltip"}
+  }
+  json_flow.add{
+    type = "label",
+    caption = {"logistics_simulation.export_json_desc"}
+  }
+
+  content.add{ type = "line" }
+
+  -- Buttons
+  local buttons = frame.add{ type = "flow", direction = "horizontal" }
+  buttons.style.horizontal_align = "right"
+  buttons.style.padding = M.GUI_CONTENT_PADDING
+  buttons.style.horizontal_spacing = M.GUI_BUTTON_SPACING
+
+  buttons.add{
+    type = "button",
+    name = M.GUI_EXPORT_CLOSE,
+    caption = {"logistics_simulation.export_cancel"}
+  }
+end
+
+function UI.close_export_dialog(player)
+  local frame = player.gui.screen[M.GUI_EXPORT_FRAME]
+  if frame and frame.valid then frame.destroy() end
+end
+
 
 function UI.show_help_gui(player)
   if player.gui.screen[M.GUI_HELP_FRAME] then return end

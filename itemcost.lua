@@ -8,10 +8,12 @@
 -- - Time value (crafting time chain)
 -- - Energy cost (time × machine power)
 -- Version 0.6.0
--- Version 0.6.1 - Localized CSV headers (cached on first use)
+-- Version 0.6.1 - Localized CSV headers (cached on first use) inopertional
+-- Vertion 0.6.3 - Cost of all items in the factory
 -- =========================================
 
 local ItemCost = {}
+ ItemCost.version = "0.6.3"
 
 -- Cache for calculated costs to avoid recalculation
 local cost_cache = {}
@@ -400,5 +402,231 @@ function ItemCost.format_detailed_breakdown(costs_result, player)
   
   return table.concat(lines, "\n")
 end
+
+-- =========================================
+-- Working Capital / Portfolio Unit Costs
+-- (No quantities; only item universe + unit costs)
+-- =========================================
+
+-- Normalize "item key" (handles string, item-with-quality table keys)
+local function normalize_item_key(k)
+  if type(k) == "string" then
+    return k
+  elseif type(k) == "table" then
+    -- Factorio can use {name=..., quality=...} style keys
+    return k.name or k.item or nil
+  else
+    return nil
+  end
+end
+
+local function add_item(set, name)
+  if not name or name == "" then return end
+  -- Ignore quality suffixes like "name@rare" if they ever show up as strings
+  -- (Your protocol may log quality, but unit costs remain per base item.)
+  name = tostring(name)
+  local base = name:match("^(.-)@.+$") or name
+  set[base] = true
+end
+
+local function add_contents_keys(set, contents)
+  if not contents then return end
+  for k, _ in pairs(contents) do
+    local name = normalize_item_key(k)
+    add_item(set, name)
+  end
+end
+
+local function scan_inventory(set, ent, inv_id)
+  if not (ent and ent.valid) then return end
+  if not inv_id then return end
+
+  local ok, inv = pcall(function() return ent.get_inventory(inv_id) end)
+  if not ok or not (inv and inv.valid) then return end
+
+  local ok2, contents = pcall(function() return inv.get_contents() end)
+  if ok2 and contents then
+    add_contents_keys(set, contents)
+  end
+end
+
+-- Portfolio products: recipe products or mining target products
+local function scan_machine_products(set, ent)
+  if not (ent and ent.valid) then return end
+
+  -- 1) Try recipe products (safe: some entity types throw on get_recipe)
+  if ent.get_recipe then
+    local ok, recipe = pcall(function() return ent.get_recipe() end)
+    if ok and recipe and recipe.valid and recipe.products then
+      for _, p in pairs(recipe.products) do
+        if p and p.name then add_item(set, p.name) end
+      end
+      return
+    end
+  end
+
+  -- 2) Mining drill products via mining_target
+  if ent.type == "mining-drill" then
+    local tgt = ent.mining_target
+    if tgt and tgt.valid and tgt.prototype and tgt.prototype.mineable_properties then
+      local prods = tgt.prototype.mineable_properties.products
+      if prods then
+        for _, p in pairs(prods) do
+          if p and p.name then add_item(set, p.name) end
+        end
+      end
+    end
+  end
+end
+
+-- Collect all items that "exist or can exist" in the factory:
+-- - registered chests: contents keys
+-- - registered tanks: fluid keys
+-- - registered machines:
+--   - recipe/mining products (portfolio mode: regardless of products_finished)
+--   - input/output/fuel/burnt buffers (because you might buy intermediate parts)
+--
+-- storage: global storage table
+-- resolve_entity_fn(rec): returns LuaEntity (e.g. Chests.resolve_entity)
+-- force: LuaForce (used later for recipe resolution in calculate_item_cost)
+function ItemCost.collect_portfolio_items(storage, resolve_entity_fn, force)
+  local set = {}
+
+  storage = storage or {}
+  local reg = storage.registry or {}
+  local machines = storage.machines or {}
+
+  -- 1) Registered chests + tanks
+  for _, rec in pairs(reg) do
+    local ent = resolve_entity_fn and resolve_entity_fn(rec) or nil
+    if ent and ent.valid then
+      if ent.type == "container" or ent.type == "logistic-container" then
+        scan_inventory(set, ent, defines.inventory.chest)
+      elseif ent.type == "storage-tank" then
+        local ok, fluids = pcall(function() return ent.get_fluid_contents() end)
+        if ok and fluids then
+          for fname, _ in pairs(fluids) do
+            add_item(set, fname)
+          end
+        end
+      end
+    end
+  end
+
+  -- 2) Registered machines: products + buffers
+  for _, rec in pairs(machines) do
+    local ent = resolve_entity_fn and resolve_entity_fn(rec) or nil
+    if ent and ent.valid then
+      -- Portfolio products (what the machine is configured to produce)
+      scan_machine_products(set, ent)
+
+      -- Buffers: input/output/fuel/burnt etc.
+      local t = ent.type
+
+      if t == "assembling-machine" then
+        scan_inventory(set, ent, defines.inventory.assembling_machine_input)
+        scan_inventory(set, ent, defines.inventory.assembling_machine_output)
+        scan_inventory(set, ent, defines.inventory.fuel)
+        scan_inventory(set, ent, defines.inventory.burnt_result)
+
+      elseif t == "furnace" then
+        scan_inventory(set, ent, defines.inventory.furnace_source)
+        scan_inventory(set, ent, defines.inventory.furnace_result)
+        scan_inventory(set, ent, defines.inventory.fuel)
+        scan_inventory(set, ent, defines.inventory.burnt_result)
+
+      elseif t == "lab" then
+        scan_inventory(set, ent, defines.inventory.lab_input)
+
+      elseif t == "mining-drill" then
+        -- Output exists for drills; fuel may exist for burner drills
+        scan_inventory(set, ent, defines.inventory.mining_drill_output)
+        scan_inventory(set, ent, defines.inventory.fuel)
+        scan_inventory(set, ent, defines.inventory.burnt_result)
+
+      elseif t == "rocket-silo" then
+        -- Safe calls; if an inventory id doesn't exist, scan_inventory will just skip.
+        scan_inventory(set, ent, defines.inventory.rocket_silo_input)
+        scan_inventory(set, ent, defines.inventory.rocket_silo_output)
+        scan_inventory(set, ent, defines.inventory.rocket_silo_result)
+      end
+    end
+  end
+
+  return set
+end
+
+-- Calculate unit costs (amount=1) for each item key in the set.
+-- Returns map: name -> { total_time, total_energy, raw_materials }
+function ItemCost.calculate_unit_costs(item_set, force)
+  force = force or game.forces.player
+  local out = {}
+
+  if not item_set then return out end
+
+  for name, _ in pairs(item_set) do
+    -- Only unit cost (amount = 1); area is irrelevant for working capital
+    local c = ItemCost.calculate_item_cost(name, 1, force)
+    if c then
+      c.area = 0
+      c.amount = 1
+      out[name] = c
+    end
+  end
+
+  return out
+end
+
+-- Format unit costs as semicolon table for the inventory window.
+function ItemCost.format_portfolio_unit_costs(unit_costs)
+  local lines = {}
+  lines[#lines+1] = "# ----"
+  lines[#lines+1] = "# WORKING_CAPITAL_PORTFOLIO (unit costs, amount=1)"
+  lines[#lines+1] = "id;item;time_s;energy_kWh;materials"
+
+  if not unit_costs or next(unit_costs) == nil then
+    lines[#lines+1] = "NONE;0;0;"
+    return table.concat(lines, "\n")
+  end
+
+  local names = {}
+  for name, _ in pairs(unit_costs) do names[#names+1] = name end
+  table.sort(names)
+
+  local id = 0 
+  for _, name in ipairs(names) do
+    local c = unit_costs[name] or {}
+    local time_s = tonumber(c.total_time or 0) or 0
+    local energy_kwh = (tonumber(c.total_energy or 0) or 0) / 3600000
+
+    local mats_str = ""
+    if c.raw_materials and next(c.raw_materials) then
+      local mats = {}
+      for mat, cnt in pairs(c.raw_materials) do
+        mats[#mats+1] = { name = mat, count = cnt }
+      end
+      table.sort(mats, function(a, b) return (a.count or 0) > (b.count or 0) end)
+
+      local parts = {}
+      local max_mats = 12
+      for i = 1, math.min(#mats, max_mats) do
+        local m = mats[i]
+        parts[#parts+1] = string.format("%s=%.1f", tostring(m.name), tonumber(m.count) or 0)
+      end
+      mats_str = table.concat(parts, ",")
+      if #mats > max_mats then
+        mats_str = mats_str .. string.format(",...(+%d)", #mats - max_mats)
+      end
+    end
+
+    id = id + 1
+    lines[#lines+1] = string.format("%d;%s;%.1f;%.3f;%s",
+    id, name, time_s, energy_kwh, mats_str)
+  end
+
+  return table.concat(lines, "\n")
+end
+
+
 
 return ItemCost
