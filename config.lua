@@ -1,28 +1,44 @@
 -- =========================================
 -- LogSim (Factorio 2.0) 
--- Configuration Module
---
--- Version 0.3.0 - Locale support
--- Version 0.6.0 - GUI constants, blueprint inventory
+-- Central configuration and storage initialization for LogSim (constants, GUI IDs, defaults).
 -- =========================================
 
 local M = {}
 
-M.version = "0.6.0"
+M.version = "0.8.0"
 
 -- =====================================
 -- Technical Configuration
 -- =====================================
 
-M.SAMPLE_INTERVAL_TICKS = 60  -- 1x per second (60fps)
+M.SAMPLE_INTERVAL_TICKS = 173 -- (60fps) this is 10min in ISO-Time (exact 173,6)
+-- ticks_per_day (z.B. 25 000) → Spielzeit / Tageslänge
+-- 1 ISO-Minute = 1/1440 of one Factorio-Day
 M.POWER_SAMPLES = 5           -- ~1.0s (5 * 0.2s)  
 M.POLLUTION_SAMPLES = 5       -- ~1.0s (5 * 0.2s)
 M.GUI_REFRESH_TICKS = 10      -- throttle GUI refresh (ticks)
-M.BUFFER_MAX_LINES = 20000
+M.BUFFER_MAX_LINES = 20000    -- max number of complete inventory
 M.TEXT_MAX = 1500000
+M.TX_MAX_EVENTS = 500000      -- max number of transaction records kept in memory
 M.CHUNK_SIZE = 32 
 M.MAX_TELEGRAM_LENGTH = 2000
 M.BUFFER_PAGE_LINES = 200
+M.COLLECT_DEPENDENC_DEPTH = 30 -- limit of depth for recursion
+
+-- Transaction watch markers (rendering)
+M.TX_MARK_INSERTERS = true
+M.TX_MARK_COLOR = { r = 1, g = 1, b = 0 }   -- yellow
+M.TX_MARK_ACTIVE_COLOR = { r=0, g=1, b=0, a=1 } -- green
+M.TX_MARK_SCALE = 1.0
+M.TX_MARK_OFFSET = { x = 0, y = -0.3 }     
+
+-- Registry markers (chests / tanks / machines / protected)
+M.REG_MARK_COLOR  = { r = 0, g = 1, b = 0, a = 1 }  -- green default
+M.REG_MARK_SCALE  = 1.0
+M.REG_MARK_OFFSET = { x = 0, y = 0.1 }            
+M.PROT_MARK_COLOR  = { r = 1, g = 0.5, b = 0, a = 1 } -- orange-ish
+M.PROT_MARK_SCALE  = 1.0
+M.PROT_MARK_OFFSET = { x = 0, y = -0.7 }
 
 -- Performance
 M.CLEANUP_INTERVAL_TICKS = 600  -- 10 seconds - cleanup disconnected players
@@ -54,6 +70,27 @@ M.GUI_CONTENT_SPACING = 8
 M.GUI_BUTTON_SPACING = 8
 M.GUI_FRAME_PADDING = 8
 
+-- TX Window
+M.GUI_TX_BTN_EXPORT = "logsim_tx_export"
+
+-- Inventory/Anlagevermögen Window
+M.GUI_INV_BTN_EXPORT = "logsim_invwin_export"
+-- =====================================
+-- ItemCost configuration
+-- =====================================
+
+-- Which entity prototype represents the "typical" machine for a recipe category.
+-- These are only used to read prototype.energy_usage. Mods may change that value.
+M.ITEMCOST_CATEGORY_MACHINE = {
+  default  = "assembling-machine-3",
+  smelting = "electric-furnace",
+  chemistry = "chemical-plant",
+}
+
+M.MAX_CACHE_SIZE = 500 -- Limit cache to prevent memory bloat
+
+-- Absolute fallback (Watts) if prototype lookup fails or energy_usage is missing/unparseable
+M.ITEMCOST_POWER_FALLBACK_W = 375000
 -- =====================================
 -- GUI Element Names (internal)
 -- =====================================
@@ -84,6 +121,21 @@ M.GUI_BTN_OLDER = "logsim_buffer_older"
 M.GUI_BTN_TAIL  = "logsim_buffer_tail"
 M.GUI_BTN_NEWER = "logsim_buffer_newer"
 M.GUI_LBL_RANGE = "logsim_buffer_range"
+
+
+-- TX Window (Transactions)
+M.GUI_BTN_TX_OPEN = "logsim_buffer_tx_open"
+
+M.GUI_TX_FRAME = "logsim_tx"
+M.GUI_TX_BOX   = "logsim_tx_box"
+M.GUI_TX_CLOSE = "logsim_tx_close"
+
+M.GUI_TX_BTN_OLDER = "logsim_tx_older"
+M.GUI_TX_BTN_TAIL  = "logsim_tx_tail"
+M.GUI_TX_BTN_NEWER = "logsim_tx_newer"
+M.GUI_TX_LBL_RANGE = "logsim_tx_range"
+M.GUI_TX_BTN_COPY  = "logsim_tx_copy"
+M.GUI_TX_BTN_HIDE  = "logsim_tx_hide"
 
 M.GUI_BP_SIDECAR    = "logsim_bp_sidecar"
 M.GUI_BP_EXTRACTBTN = "logsim_bp_extract"
@@ -157,5 +209,113 @@ M.ITEM_ALIASES = {
   ["lubricant"]         = "Lube",
   ["sulfuric-acid"]     = "H2SO4",
 }
+
+-- =====================================
+-- Central Storage Initialization (Factorio 2.0)
+-- idempotent: safe to call anytime
+-- =====================================
+
+local function apply_sample_interval_from_config()
+  -- Config value
+  local cfg = M.SAMPLE_INTERVAL_TICKS
+
+  -- Validate config
+  if type(cfg) ~= "number" or cfg < 1 then
+    -- hard warning, but KEEP old stored value so the mod continues
+    log(string.format("[LogSim][ERROR] Invalid config SAMPLE_INTERVAL_TICKS=%s. Keeping stored sample_interval=%s",
+      tostring(cfg), tostring(storage.sample_interval)))
+
+    -- Optional: tell players in-game once (safe + visible)
+    for _, p in pairs(game.players) do
+      if p and p.valid then
+        p.print({"", "[LogSim] ERROR: SAMPLE_INTERVAL_TICKS invalid (", tostring(cfg),
+                 "). Keeping old interval: ", tostring(storage.sample_interval)})
+      end
+    end
+    return
+  end
+
+  -- Config is valid -> ALWAYS apply (this is what you want)
+  storage.sample_interval = cfg
+end
+
+
+function M.ensure_storage_defaults(st)
+  -- allow explicit table (tests), default: global storage
+  st = st or storage
+  if not st then
+    st = {}
+    storage = st
+  end
+
+  -- Always re-apply config value (unless config invalid)
+  apply_sample_interval_from_config()
+
+  -- -------- core run / protocol --------
+  st.run_name = st.run_name or nil
+  st.run_start_tick = st.run_start_tick or nil
+
+  if st.protocol_active == nil then st.protocol_active = false end
+  if st.info_mode == nil then st.info_mode = false end
+
+  -- -------- buffer --------
+  st.buffer_lines     = st.buffer_lines or {}
+  st.buffer_view      = st.buffer_view or {}
+
+-- -------- tx viewer --------
+st.tx_view          = st.tx_view or {}
+st.tx_gui_dirty     = st.tx_gui_dirty or {}
+st._tx_last_gui_refresh_tick = st._tx_last_gui_refresh_tick or 0
+  st.gui_dirty        = st.gui_dirty or {}
+  st.perline_counter  = st.perline_counter or 0
+  st._buf_last_gui_refresh_tick = st._buf_last_gui_refresh_tick or 0
+
+  -- -------- registries --------
+  st.registry = st.registry or {}
+  st.next_chest_id = st.next_chest_id or 1
+  st.next_tank_id  = st.next_tank_id  or 1
+
+  st.machines = st.machines or {}
+  st.next_machine_id = st.next_machine_id or 1
+
+  st.protected = st.protected or {}
+  st.next_protect_id = st.next_protect_id or 1
+
+  st.marker_dirty = st.marker_dirty or false
+  st._needs_rendering_cleanup = st._needs_rendering_cleanup or false
+
+  -- -------- transactions (in-memory) --------
+  st.tx_active = (st.tx_active ~= false) -- default true unless explicitly disabled
+
+  st.tx_obj_by_unit       = st.tx_obj_by_unit or {}
+  st.tx_inserter_by_unit  = st.tx_inserter_by_unit or {}
+  st.tx_next_inserter_id  = st.tx_next_inserter_id or 1
+
+  st.tx_watch      = st.tx_watch or {}
+  st.tx_watch_meta = st.tx_watch_meta or {}
+  st.tx_active_inserters = st.tx_active_inserters or {}
+
+  st.tx_events     = st.tx_events or {}
+  st.tx_max_events = st.tx_max_events or (M.TX_MAX_EVENTS or 500000)
+
+  st.tx_rebuild_interval  = st.tx_rebuild_interval  or 60
+  st.tx_last_rebuild_tick = st.tx_last_rebuild_tick or 0
+
+  -- optional debug info
+  if st.tx_dbg_watch == nil then st.tx_dbg_watch = nil end
+
+  -- rendering marks
+  st.tx_mark_render_ids = st.tx_mark_render_ids or {}
+
+  -- virtual buffers derived from TX postings (running balances)
+  st.tx_virtual = st.tx_virtual or {
+    T00  = {},
+    SHIP = {},
+    RECV = {},
+}
+
+  return st
+end
+
 
 return M

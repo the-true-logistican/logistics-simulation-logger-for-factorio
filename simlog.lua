@@ -1,14 +1,7 @@
 -- =========================================
 -- LogSim (Factorio 2.0) 
 -- Logging & Trace Module for Logistics Simulation
--- (String generation, no side effects)
---
--- Version 0.3.0 first für LogSim 0.3.0
--- Version 0.3.1 power and more infos
--- Version 0.3.2 machines finished products
--- Version 0.3.3 simlog.M.ITEM_ALIASES
--- Version 0.5.2 multi-surface support
--- Version 0.5.4 optimized power statistics (multi-network), string operations
+-- Builds protocol log strings from live factory state (power, pollution, machines, inventories).
 -- =========================================
 
 local M = require("config")
@@ -16,9 +9,10 @@ local T = M.T
 local R = require("reset")
 local UI = require("ui")
 local Chests = require("chests")
+local Util = require("utility")
 
 local SimLog = {}
-SimLog.version = "0.5.4"
+SimLog.version = "0.8.0"
 
 SimLog.MACHINE_STATE = {
   RUN       = "RUN",
@@ -87,34 +81,40 @@ function SimLog.get_power_w_1s(surface)
   local samples = M.POWER_SAMPLES
   local sum_samples = 0.0
 
-  local networks = surface.find_entities_filtered{type = "electric-pole"}
+  -- Collect unique networks (fixed: store actual statistics object, not just true)
   local seen_networks = {}
+  local networks = surface.find_entities_filtered{type = "electric-pole"}
   
   for _, pole in pairs(networks) do
     if pole.valid and pole.electric_network_id then
       local net_id = pole.electric_network_id
       
+      -- Only process each network ONCE
       if not seen_networks[net_id] then
-        seen_networks[net_id] = true
-        
         local stats = pole.electric_network_statistics
         if stats then
-          for i = 1, samples do
-            local sample_total = 0.0
-            
-            for proto, _ in pairs(stats.input_counts or {}) do
-              sample_total = sample_total + stats.get_flow_count{
-                name = proto,
-                category = "input",
-                precision_index = precision,
-                sample_index = i
-              }
-            end
-            
-            sum_samples = sum_samples + sample_total
-          end
+          seen_networks[net_id] = stats  -- ← FIX: Speichere stats, nicht true
         end
       end
+    end
+  end
+  
+  -- Now sum up power from each unique network
+  for net_id, stats in pairs(seen_networks) do
+    for i = 1, samples do
+      local sample_total = 0.0
+      
+      -- Sum all inputs for this sample
+      for proto, _ in pairs(stats.input_counts or {}) do
+        sample_total = sample_total + stats.get_flow_count{
+          name = proto,
+          category = "input",
+          precision_index = precision,
+          sample_index = i
+        }
+      end
+      
+      sum_samples = sum_samples + sample_total
     end
   end
   
@@ -123,10 +123,11 @@ end
 
 function SimLog.begin_telegram(tick, surface, force)
   storage.perline_counter = (storage.perline_counter or 0) + 1
+  surface = surface or (game and game.surfaces and game.surfaces[1])  -- fallback
   local line_counter = storage.perline_counter
   
   local parts = {}
-  parts[#parts+1] = table.concat({ tostring(line_counter), " tick=", tostring(tick) })
+  parts[#parts+1] = table.concat({ tostring(line_counter),";Zeit=", Util.to_excel_datetime(game.tick, surface), ";tick=", tostring(tick) })
   parts[#parts+1] = "0000"
  
   if surface and surface.valid then
@@ -177,6 +178,55 @@ function SimLog.build_string(list, resolve_fn, encode_fn)
   end
 
   return table.concat(segs, ";")
+end
+
+-- -----------------------------------------
+-- Virtual buffers (T00 / SHIP / RECV)
+-- Appends snapshot balances to the telegram parts.
+-- -----------------------------------------
+
+function SimLog.encode_virtual(obj_id, contents)
+  if not obj_id or not contents or next(contents) == nil then return nil end
+
+  local function short_name(name)
+    return M.ITEM_ALIASES[name] or name
+  end
+
+  local items = {}
+  for key, count in pairs(contents) do
+    if type(count) == "number" then
+      local name, qual = key:match("^(.-)@(.+)$")
+      name = name or key
+
+      local sname = short_name(name)
+      if qual and qual ~= "normal" then
+        items[#items+1] = sname .. "@" .. qual .. "=" .. tostring(count)
+      else
+        items[#items+1] = sname .. "=" .. tostring(count)
+      end
+    end
+  end
+
+  if #items == 0 then return nil end
+  table.sort(items)
+  return obj_id .. ":" .. table.concat(items, "|")
+end
+
+function SimLog.append_virtual_buffers(parts)
+  -- parts is the telegram "parts" array (strings)
+  if not parts then return end
+  if not (storage and storage.tx_virtual) then return end
+
+  local v = storage.tx_virtual
+
+  -- fixed order
+  local s3 = SimLog.encode_virtual("RECV", v.RECV)
+  local s1 = SimLog.encode_virtual("T00",  v.T00)
+  local s2 = SimLog.encode_virtual("SHIP", v.SHIP)
+
+  if s1 then parts[#parts+1] = s1 end
+  if s2 then parts[#parts+1] = s2 end
+  if s3 then parts[#parts+1] = s3 end
 end
 
 function SimLog.build_string_for_surface(list, surface_index, resolve_fn, encode_fn)
@@ -403,18 +453,13 @@ function SimLog.build_header(meta)
   local lines = {}
   lines[#lines+1] = "# LogSim Protocol"
   lines[#lines+1] = "# version=" .. tostring(get_logger_version())
-  lines[#lines+1] = "# modules config=" .. M.version ..
-                    " reset=" .. R.version ..
-                    " chests=" .. Chests.version ..
-                    " dialogs=" .. UI.version ..
-                    " logging=" .. SimLog.version
 
   if meta.run_name then   lines[#lines+1] = "# run_name=" .. tostring(meta.run_name) end
   if meta.start_tick then lines[#lines+1] = "# start_tick=" .. tostring(meta.start_tick) end
   if meta.surface then    lines[#lines+1] = "# surface=" .. tostring(meta.surface) end
   if meta.force then      lines[#lines+1] = "# force=" .. tostring(meta.force) end
 
-  lines[#lines+1] = "# format: tick;len4;surface;segments..."
+  lines[#lines+1] = "# format: ID;DateTime;tick;len4;surface;Power;Pollution;Inventory of registered Chests;Activity of registered Machines"
   lines[#lines+1] = "# ----"
 
   return table.concat(lines, "\n")

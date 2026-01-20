@@ -1,17 +1,135 @@
 -- =========================================
 -- LogSim (Factorio 2.0) 
--- UI Module with Locale Support
--- Version 0.3.0
--- Version 0.5.3 statistics reset checkbox
--- Version 0.6.0 blueprint inventory support, config constants
--- Version 0.6.1 full localization (no hard-coded strings)
--- Version 0.6.2 Export implemented
+-- All GUI creation and interaction logic (buffer, transactions, export, reset, blueprint views).
 -- =========================================
 
 local M = require("config")
 
 local UI = {}
-UI.version = "0.6.2"
+UI.version = "0.8.0"
+
+-- =======================
+-- functions for markers
+-- =======================
+
+-- --- internal helpers --------------------------------------------------------
+
+local function _as_render_object(x)
+  if not x then return nil end
+  if type(x) == "number" then
+    return rendering.get_object_by_id(x)
+  end
+  return x
+end
+
+local function _destroy_render(x)
+  local obj = _as_render_object(x)
+  if obj and obj.valid then obj:destroy() end
+end
+
+local function _norm_color(c, fallback)
+  c = c or fallback or { r=1, g=1, b=1, a=1 }
+  -- alpha is critical: if missing, force to 1 so text is visible
+  local a = (c.a == nil) and 1 or c.a
+  return {
+    r = (c.r == nil) and 1 or c.r,
+    g = (c.g == nil) and 1 or c.g,
+    b = (c.b == nil) and 1 or c.b,
+    a = a
+  }
+end
+
+local function _norm_offset(off, fallback_x, fallback_y)
+  off = off or { x = fallback_x or 0, y = fallback_y or -1.0 }
+
+  -- Accept either {x=..., y=...} or { [1]=..., [2]=... }
+  if off.x ~= nil or off.y ~= nil then
+    return { (off.x or fallback_x or 0), (off.y or fallback_y or -1.0) }
+  end
+  return { (off[1] or fallback_x or 0), (off[2] or fallback_y or -1.0) }
+end
+
+local function _style_key(color, offset, scale, alignment)
+  -- stable-ish key to detect when we must redraw
+  return table.concat({
+    string.format("%.3f", color.r), string.format("%.3f", color.g),
+    string.format("%.3f", color.b), string.format("%.3f", color.a),
+    string.format("%.3f", offset[1]), string.format("%.3f", offset[2]),
+    string.format("%.3f", scale or 1.0),
+    tostring(alignment or "center"),
+  }, "|")
+end
+
+-- --- public API --------------------------------------------------------------
+
+--- Update (or create) a text marker attached to an entity.
+--- rec: table that can hold marker state (rec.marker_text will be stored here)
+--- ent: LuaEntity (or nil to clear)
+--- text: string
+--- style: {
+---   color = {r,g,b,a?},
+---   offset = {x=..., y=...} OR {dx, dy},
+---   scale = number,
+---   alignment = "center" (optional)
+--- }
+function UI.marker_text_update(rec, ent, text, style)
+  if not rec then return end
+
+  -- clear if entity is invalid / absent
+  if not (ent and ent.valid) then
+    _destroy_render(rec.marker_text)
+    rec.marker_text = nil
+    rec._marker_text_style_key = nil
+    return
+  end
+
+  style = style or {}
+  local color = _norm_color(style.color, { r=1, g=1, b=1, a=1 })
+  local offset = _norm_offset(style.offset, 0, -1.0)
+  local scale = style.scale or 1.0
+  local alignment = style.alignment or "center"
+
+  -- If style changes, we redraw instead of trying to set non-existent properties.
+  local skey = _style_key(color, offset, scale, alignment)
+  local need_redraw = (rec._marker_text_style_key ~= skey)
+  rec._marker_text_style_key = skey
+
+  local obj = _as_render_object(rec.marker_text)
+  if need_redraw and obj and obj.valid then
+    obj:destroy()
+    obj = nil
+    rec.marker_text = nil
+  end
+
+  local target = { entity = ent, offset = offset }
+
+  if not (obj and obj.valid) then
+    -- Create with offset
+    rec.marker_text = rendering.draw_text{
+      text = text or "",
+      surface = ent.surface,
+      target = target,
+      color = color,
+      alignment = alignment,
+      scale = scale
+    }
+  else
+    -- Update: KEEP offset by setting target as ScriptRenderTargetTable again
+    obj.target = target
+    obj.text = text or ""
+  end
+end
+--- Explicit clear helper (optional convenience)
+function UI.marker_text_clear(rec)
+  if not rec then return end
+  _destroy_render(rec.marker_text)
+  rec.marker_text = nil
+  rec._marker_text_style_key = nil
+end
+
+-- =======================
+-- winwis etc.
+-- =======================
 
 function UI.show_runname_gui(player)
   if player.gui.screen.logsim_runname then return end
@@ -100,6 +218,15 @@ function UI.show_buffer_gui(player)
     tooltip = {"logistics_simulation.buffer_newer"}
   }
   
+
+-- TX Window (Transactions)
+top.add{
+  type = "button",
+  name = M.GUI_BTN_TX_OPEN,
+  caption = {"logistics_simulation.gui_tx_open"},
+  tooltip = {"logistics_simulation.gui_tx_title"}
+}
+
   top.add{ 
     type = "button", 
     name = M.GUI_BTN_COPY, 
@@ -175,10 +302,22 @@ function UI.show_export_dialog(player)
     caption = {"logistics_simulation.export_filename_label"}
   }
 
-  local default_name = storage.base_filename or 
-                       string.format("%s_%s", M.EXPORT_DEFAULT_NAME, 
-                                    os.date("%Y%m%d_%H%M%S"))
-  
+-- Always generate a fresh default filename (no stale storage.base_filename)
+local function sanitize_filename(s)
+  return (tostring(s):gsub("[^%w%._%-]", "_"))
+end
+
+local run_tick = storage.run_start_tick or game.tick
+local exp_tick = game.tick
+local rn  = sanitize_filename(storage.run_name or "run")
+local ver = sanitize_filename(get_logger_version())
+
+-- Start with tick (what you want), but also include export tick for uniqueness
+local default_name = string.format(
+  "tick%09d__%s__logsim-v%s__export%09d",
+  run_tick, rn, ver, exp_tick
+)
+
   local filename_field = name_flow.add{
     type = "textfield",
     name = M.GUI_EXPORT_FILENAME,
@@ -498,6 +637,13 @@ function UI.show_inventory_window(player, text)
 
   top.add{
     type = "button",
+    name = M.GUI_INV_BTN_EXPORT,
+    caption = {"logistics_simulation.buffer_export"},
+    tooltip = {"logistics_simulation.export_dialog_title"}
+  }
+
+  top.add{
+    type = "button",
     name = M.GUI_INV_BTN_CLOSE,
     caption = {"logistics_simulation.invwin_close"}
   }
@@ -521,4 +667,88 @@ function UI.close_inventory_window(player)
   if f and f.valid then f.destroy() end
 end
 
+
+
+-- -----------------------------------------
+-- TX Window (Transactions Viewer)
+-- Same look & feel as buffer window, fully localized.
+-- -----------------------------------------
+
+function UI.show_tx_gui(player)
+  if player.gui.screen[M.GUI_TX_FRAME] then return end
+
+  local frame = player.gui.screen.add{
+    type = "frame",
+    direction = "vertical",
+    name = M.GUI_TX_FRAME
+  }
+  frame.auto_center = true
+  add_titlebar(frame, {"logistics_simulation.gui_tx_title"}, M.GUI_TX_CLOSE)
+
+  local top = frame.add{
+    type = "flow",
+    name = "logsim_tx_toolbar",
+    direction = "horizontal"
+  }
+
+  top.add{
+    type = "sprite-button",
+    name = M.GUI_TX_BTN_OLDER,
+    sprite = "utility/left_arrow",
+    style = "tool_button",
+    tooltip = {"logistics_simulation.tx_older"}
+  }
+
+  top.add{
+    type = "button",
+    name = M.GUI_TX_BTN_TAIL,
+    caption = {"logistics_simulation.tx_live"},
+    tooltip = {"logistics_simulation.tx_live_tooltip"}
+  }
+
+  top.add{
+    type = "sprite-button",
+    name = M.GUI_TX_BTN_NEWER,
+    sprite = "utility/right_arrow",
+    style = "tool_button",
+    tooltip = {"logistics_simulation.tx_newer"}
+  }
+
+  top.add{
+    type = "button",
+    name = M.GUI_TX_BTN_COPY,
+    caption = {"logistics_simulation.tx_copy"}
+  }
+
+  top.add{
+    type = "button",
+    name = M.GUI_TX_BTN_EXPORT,
+    caption = {"logistics_simulation.buffer_export"},
+    tooltip = {"logistics_simulation.export_dialog_title"}
+  }
+
+  top.add{
+    type = "button",
+    name = M.GUI_TX_BTN_HIDE,
+    caption = {"logistics_simulation.tx_hide"}
+  }
+
+  local box = frame.add{
+    type = "text-box",
+    name = M.GUI_TX_BOX,
+    text = ""
+  }
+  box.read_only = true
+  box.word_wrap = false
+  box.style.width = M.GUI_BUFFER_WIDTH
+  box.style.height = M.GUI_BUFFER_HEIGHT
+
+  storage.tx_view = storage.tx_view or {}
+  storage.tx_view[player.index] = { start_line = 1, end_line = 0, follow = true }
+end
+
+function UI.close_tx_gui(player)
+  local f = player.gui.screen[M.GUI_TX_FRAME]
+  if f and f.valid then f.destroy() end
+end
 return UI

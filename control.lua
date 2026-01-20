@@ -1,6 +1,6 @@
 -- =========================================
 -- LogSim (Factorio 2.0) 
--- Main Control 
+-- Main runtime controller: wires events, ticks, hotkeys and GUI actions together.
 --
 -- Version 0.1.0 first für LogSim 
 -- Version 0.2.0 first modularisation
@@ -16,6 +16,9 @@
 -- Version 0.6.0 blueprint inventory extraction with cost calculation
 -- Version 0.6.1 locale de/en; debugging
 -- Version 0.6.2 export to file csv/json
+-- Version 0.6.3 stabilising of the mod
+-- Version 0.7.x transaction based on inserter action
+-- Version 0.8.0 complete accounting with export
 -- =========================================
 
 local DEBUG = true
@@ -29,16 +32,14 @@ local SimLog = require("simlog")
 local ItemCost = require("itemcost")
 local Blueprint = require("blueprint")
 local Export = require("export")
+local Transaction = require("transaction")
+local Util = require("utility")
 
-
--- Blueprint inventory: session only (not persistent) - REMOVED, moved to blueprint.lua
--- bp_session moved to blueprint.lua module
+local _needs_marker_refresh_after_load = false
 
 -- Forward declarations
 local debug_print
 local ensure_storage_defaults
-local sanitize_filename
-local build_base_filename
 local maybe_prompt_runname_for_all_players
 local handle_runname_submit
 local resolve_entity
@@ -73,7 +74,6 @@ handle_runname_submit = function(player)
 
   storage.run_name = name
   storage.run_start_tick = storage.run_start_tick or game.tick
-  storage.base_filename = build_base_filename(storage.run_name, storage.run_start_tick)
 
   if not storage.buffer_lines or #storage.buffer_lines == 0 then
     storage.buffer_lines = {}
@@ -116,42 +116,18 @@ end
 
 
 ensure_storage_defaults = function()
-  storage.run_name = storage.run_name or nil
-  storage.run_start_tick = storage.run_start_tick or nil
-  storage.base_filename = storage.base_filename or nil
-  storage.sample_interval = storage.sample_interval or M.SAMPLE_INTERVAL_TICKS
-
-  if storage.protocol_active == nil then
-    storage.protocol_active = false
-  end
-
-  if storage.info_mode == nil then
-    storage.info_mode = false
-  end
-
-  Buffer.ensure_defaults()
-
-  storage.registry = storage.registry or {}
-  storage.next_chest_id = storage.next_chest_id or 1
-  storage.next_tank_id = storage.next_tank_id or 1
-
-  storage.machines = storage.machines or {}
-  storage.next_machine_id = storage.next_machine_id or 1
-
-  storage.protected = storage.protected or {}
-  storage.next_protect_id = storage.next_protect_id or 1
-
-  storage.marker_dirty = storage.marker_dirty or false
-  storage._needs_rendering_cleanup = storage._needs_rendering_cleanup or false
+  M.ensure_storage_defaults(storage)
 end
 
-sanitize_filename = function(s)
-  return (tostring(s):gsub("[^%w%._%-]", "_"))
+local function init_storage()
+  storage = storage or {}
+  M.ensure_storage_defaults(storage)
 end
+
 
 build_base_filename = function(run_name, start_tick)
-  local rn = sanitize_filename(run_name or "run")
-  local ver = sanitize_filename(get_logger_version())
+  local rn = Util.sanitize_filename(run_name or "run")
+  local ver = Util.sanitize_filename(get_logger_version())
   local tick = start_tick or 0
   return string.format("tick%09d__%s__logsim-v%s", tick, rn, ver)
 end
@@ -240,14 +216,20 @@ end
 -- -----------------------------------------
 
 script.on_init(function()
-  ensure_storage_defaults()
+  init_storage()
   debug_print({"logistics_simulation.mod_initialised"})
+  -- Transactions: build initial maps/watchlist (in-memory only)
+  if Transaction and Transaction.rebuild_object_map then
+    Transaction.rebuild_object_map()
+  end
+  if Transaction and Transaction.rebuild_watchlist then
+    Transaction.rebuild_watchlist()
+  end
   maybe_prompt_runname_for_all_players()
 end)
 
 script.on_configuration_changed(function(data)
-  ensure_storage_defaults()
-  
+  init_storage()
   local mod_changes = data.mod_changes and data.mod_changes["logistics_simulation"]
   if mod_changes then
     local old_version = mod_changes.old_version
@@ -256,13 +238,18 @@ script.on_configuration_changed(function(data)
       storage._needs_rendering_cleanup = true
     end
   end
-  
+  -- Transactions: refresh maps/watchlist after migrations/config changes
+  if Transaction and Transaction.rebuild_object_map then
+    Transaction.rebuild_object_map()
+  end
+  if Transaction and Transaction.rebuild_watchlist then
+    Transaction.rebuild_watchlist()
+  end
   maybe_prompt_runname_for_all_players()
 end)
 
 script.on_load(function()
-  -- After load, rendering IDs are invalid and need to be cleared
-  -- We set a flag in on_configuration_changed and clear it in on_tick
+  _needs_marker_refresh_after_load = true
 end)
 
 -- -----------------------------------------
@@ -330,13 +317,19 @@ end)
 script.on_event(defines.events.on_gui_closed, function(event)
   local element = event.element
   if not (element and element.valid) then return end
-  
+
   -- Close buffer window
   if element.name == M.GUI_BUFFER_FRAME then
     element.destroy()
     return
   end
-  
+
+  -- Close TX window
+  if element.name == M.GUI_TX_FRAME then
+    element.destroy()
+    return
+  end
+
   -- Close inventory window
   if element.name == "logsim_invwin" then
     element.destroy()
@@ -358,7 +351,12 @@ local entity_cleanup_events = {
 script.on_event(entity_cleanup_events, function(event)
   local ent = event.entity
   if not (ent and ent.unit_number) then return end
-  
+
+  -- PATCH #1: Invalidate entity cache
+  if Chests.invalidate_cache_entry then
+    Chests.invalidate_cache_entry(ent.unit_number)
+  end
+ 
   cleanup_entity_from_registries(ent.unit_number, Buffer.append_line)
 end)
 
@@ -425,25 +423,15 @@ local function tick_build_and_append_logline()
     local parts = SimLog.begin_telegram(tick, surface, force)
     
     local chest_str = SimLog.build_string_for_surface(
-      storage.registry, 
-      surf_idx,
-      resolve_entity, 
-      SimLog.encode_chest
-    )
-    if chest_str ~= "" then
-      parts[#parts+1] = chest_str
-    end
+      storage.registry, surf_idx, resolve_entity, SimLog.encode_chest)
+    if chest_str ~= "" then parts[#parts+1] = chest_str end
     
     local machine_str = SimLog.build_string_for_surface(
-      storage.machines,
-      surf_idx,
-      resolve_entity,
-      SimLog.encode_machine
-    )
-    if machine_str ~= "" then
-      parts[#parts+1] = machine_str
-    end
+      storage.machines, surf_idx, resolve_entity, SimLog.encode_machine)
+    if machine_str ~= "" then parts[#parts+1] = machine_str end
     
+    SimLog.append_virtual_buffers(parts) 
+	
     Buffer.append_line(SimLog.end_telegram(parts))
     
     ::continue::
@@ -451,12 +439,37 @@ local function tick_build_and_append_logline()
 end
 
 script.on_event(defines.events.on_tick, function(event)
+  -- Transactions (in-memory): observe inserter movements every tick
+  if Transaction and Transaction.on_tick then
+    Transaction.on_tick(event.tick)
+  end
+  
+  if _needs_marker_refresh_after_load then
+    if Chests and Chests.refresh_all_markers then
+      Chests.refresh_all_markers()
+    end
+    if Transaction and Transaction.update_marks then
+      Transaction.update_marks()
+    end
+    _needs_marker_refresh_after_load = false
+  end  
+  
   if storage._needs_rendering_cleanup then
-    clear_invalid_rendering_objects()
+    if Chests and Chests.refresh_all_markers then
+      Chests.refresh_all_markers()
+    end
+    if Transaction and Transaction.update_marks then
+      Transaction.update_marks()
+    end
+    storage._needs_rendering_cleanup = false
   end
 
   if (event.tick % M.CLEANUP_INTERVAL_TICKS) == 0 then
     Buffer.cleanup_disconnected_players()
+    -- NEU: Blueprint session cleanup
+    if Blueprint.cleanup_all_disconnected then
+      Blueprint.cleanup_all_disconnected()
+    end	
   end
 
   if storage.marker_dirty then
@@ -465,6 +478,11 @@ script.on_event(defines.events.on_tick, function(event)
   end
 
   Buffer.tick_refresh_open_guis(event.tick)
+  
+  -- TX GUI refresh (throttled, like Buffer)
+  if Transaction and Transaction.tx_tick_refresh_open_guis then
+    Transaction.tx_tick_refresh_open_guis(event.tick)
+  end
 
   -- Clean up blueprint sidecars (delegated to blueprint module)
   Blueprint.tick_cleanup_sidecars()
@@ -473,6 +491,22 @@ script.on_event(defines.events.on_tick, function(event)
   if not tick_should_log() then return end
   tick_build_and_append_logline()
 end)
+
+-- -----------------------------------------
+-- Player Lifecycle Events
+-- -----------------------------------------
+
+script.on_event(defines.events.on_player_left_game, function(event)
+  -- Blueprint session cleanup
+  if Blueprint.cleanup_session then
+    Blueprint.cleanup_session(event.player_index)
+  end 
+  -- Auch Buffer view state cleanen
+  if storage.buffer_view then
+    storage.buffer_view[event.player_index] = nil
+  end
+end)
+
 
 -- -----------------------------------------
 -- Custom Inputs (Hotkeys)
@@ -490,9 +524,30 @@ local function hotkey_toggle_buffer(event)
   end
 end
 
+-- NEW: Shift+R - if inserter is selected, allow activation ONLY if watched
+
 local function hotkey_register_chest(event)
   local player = game.players[event.player_index]
+  if not (player and player.valid) then return end
+
+  local ent = player.selected
+
+  -- Inserter path: fully handled inside Transaction (messages included)
+  if Transaction and Transaction.handle_register_hotkey then
+    local handled = Transaction.handle_register_hotkey(player, ent)
+    if handled then return end
+  end
+
+  -- Default behavior (registry)
   Chests.register_selected(player, Buffer.append_line)
+
+  -- After registering objects: refresh TX maps/watch immediately
+  if Transaction and Transaction.rebuild_object_map then
+    Transaction.rebuild_object_map()
+  end
+  if Transaction and Transaction.rebuild_watchlist then
+    Transaction.rebuild_watchlist()
+  end
 end
 
 local function hotkey_register_protect(event)
@@ -500,9 +555,29 @@ local function hotkey_register_protect(event)
   Chests.register_protect(player, Buffer.append_line)
 end
 
+-- NEW: Shift+U - if inserter is selected, clear active marking (back to yellow)
 local function hotkey_unregister_selected(event)
   local player = game.players[event.player_index]
+  local ent = player.selected
+
+  if ent and ent.valid and ent.type == "inserter" and ent.unit_number then
+    if Transaction and Transaction.set_inserter_active then
+      Transaction.set_inserter_active(ent.unit_number, false)
+      player.print({"logistics_simulation.tx_inserter_marked_auto"})
+    end
+    return
+  end
+
+  -- default behavior
   Chests.unregister_selected(player, Buffer.append_line)
+  -- after unregistering objects, refresh TX maps/watch immediately
+  if Transaction and Transaction.rebuild_object_map then
+    Transaction.rebuild_object_map()
+  end
+  if Transaction and Transaction.rebuild_watchlist then
+    Transaction.rebuild_watchlist()
+  end
+  
 end
 
 script.on_event(
@@ -529,21 +604,92 @@ script.on_event(
 
 -- -----------------------------------------
 -- GUI Click Handlers 
+
+
+local function click_tx_open(event)
+  local player = game.players[event.player_index]
+  if not (player and player.valid) then return end
+  UI.show_tx_gui(player)
+end
+
+-- TX Window handlers
+local function click_tx_open(event)
+  local player = game.players[event.player_index]
+  UI.show_tx_gui(player)
+  if Transaction and Transaction.tx_refresh_for_player then
+    Transaction.tx_refresh_for_player(player)
+  else
+    -- fallback: mark dirty; refresh done on tick
+    storage.tx_gui_dirty = storage.tx_gui_dirty or {}
+    storage.tx_gui_dirty[player.index] = true
+  end
+end
+
+local function click_tx_hide(event)
+  local player = game.players[event.player_index]
+  UI.close_tx_gui(player)
+end
+
+local function click_tx_older(event)
+  local player = game.players[event.player_index]
+  if Transaction and Transaction.tx_page_older then Transaction.tx_page_older(player) end
+end
+
+local function click_tx_newer(event)
+  local player = game.players[event.player_index]
+  if Transaction and Transaction.tx_page_newer then Transaction.tx_page_newer(player) end
+end
+
+local function click_tx_tail(event)
+  local player = game.players[event.player_index]
+  if Transaction and Transaction.tx_tail then Transaction.tx_tail(player) end
+end
+
+local function click_tx_copy(event)
+  local player = game.players[event.player_index]
+  if Transaction and Transaction.tx_copy_to_clipboard then Transaction.tx_copy_to_clipboard(player) end
+end
 -- -----------------------------------------
 
 local function click_buffer_export(event)
   local player = game.players[event.player_index]
+  storage.export_mode = "buffer"
   UI.show_export_dialog(player)
 end
 
+local function click_tx_export(event)
+  local player = game.players[event.player_index]
+  storage.export_mode = "tx"
+  UI.show_export_dialog(player)
+end
+
+local function click_inv_export(event)
+  local player = game.players[event.player_index]
+  storage.export_mode = "inv"
+  UI.show_export_dialog(player)
+end
+
+
 local function click_export_csv(event)
   local player = game.players[event.player_index]
-  Export.export_csv(player)
+  if storage.export_mode == "tx" then
+    Export.export_tx_csv(player)
+  elseif storage.export_mode == "inv" then
+    Export.export_inv_csv(player)
+  else
+    Export.export_csv(player) -- buffer/protocol
+  end
 end
 
 local function click_export_json(event)
   local player = game.players[event.player_index]
-  Export.export_json(player)
+  if storage.export_mode == "tx" then
+    Export.export_tx_json(player)
+  elseif storage.export_mode == "inv" then
+    Export.export_inv_json(player)
+  else
+    Export.export_json(player) -- buffer/protocol
+  end
 end
 
 local function click_export_close(event)
@@ -602,6 +748,10 @@ local function click_reset_ok(event)
     storage.gui_dirty = {}
     
     storage.run_start_tick = game.tick
+
+    if Transaction and Transaction.reset_tx_log then
+      Transaction.reset_tx_log()
+    end
 
     local header = SimLog.build_header{
       mod_name = storage.mod_name,
@@ -751,8 +901,26 @@ script.on_event(defines.events.on_gui_click, function(event)
     click_invwin_copy(event)
   elseif name == "logsim_invwin_close" or name == "logsim_invwin_close_x" then
     click_invwin_close(event)
+  elseif name == M.GUI_BTN_TX_OPEN then
+    click_tx_open(event)
+  elseif name == M.GUI_BTN_TX_OPEN then
+    click_tx_open(event)
+  elseif name == M.GUI_TX_CLOSE or name == M.GUI_TX_BTN_HIDE then
+    click_tx_hide(event)
+  elseif name == M.GUI_TX_BTN_OLDER then
+    click_tx_older(event)
+  elseif name == M.GUI_TX_BTN_TAIL then
+    click_tx_tail(event)
+  elseif name == M.GUI_TX_BTN_NEWER then
+    click_tx_newer(event)
+  elseif name == M.GUI_TX_BTN_COPY then
+    click_tx_copy(event)	
   elseif name == M.GUI_BTN_EXPORT then
     click_buffer_export(event)
+  elseif name == M.GUI_TX_BTN_EXPORT then
+    click_tx_export(event)
+  elseif name == M.GUI_INV_BTN_EXPORT then
+    click_inv_export(event)
   elseif name == M.GUI_BTN_EXPORT_CSV then
     click_export_csv(event)
   elseif name == M.GUI_BTN_EXPORT_JSON then
@@ -761,6 +929,99 @@ script.on_event(defines.events.on_gui_click, function(event)
     click_export_close(event)
   end 
 end)
+
+
+-- -----------------------------------------
+-- Remote Interface (Debug helpers)
+-- -----------------------------------------
+remote.add_interface("logsim", {
+  registry_size = function()
+    return storage and storage.registry and table_size(storage.registry) or 0
+  end,
+
+  machines_size = function()
+    return storage and storage.machines and table_size(storage.machines) or 0
+  end,
+
+  protocol_active = function()
+    return storage and storage.protocol_active or false
+  end,
+
+  tx_events_size = function()
+    return storage and storage.tx_events and #storage.tx_events or 0
+  end,
+  
+  tx_watch_size = function()
+    return storage and storage.tx_watch and table_size(storage.tx_watch) or 0
+  end,
+
+  tx_objmap_size = function()
+    return storage and storage.tx_obj_by_unit and table_size(storage.tx_obj_by_unit) or 0
+  end,
+
+  tx_last_rebuild = function()
+    return storage and storage.tx_last_rebuild_tick or 0
+  end,
+
+  tx_last = function()
+    local t = storage and storage.tx_events
+    if not t or #t == 0 then return nil end
+    return t[#t]
+  end,
+  
+  tx_version = function()
+    return Transaction and Transaction.version or "nil"
+  end,
+
+  tx_debug_scan = function()
+    local rec = nil
+    for _, r in pairs(storage.registry or {}) do rec = r; break end
+    if not rec then return "no registry" end
+    if not rec.surface_index then return "no surface_index" end
+    if not rec.position then return "no position" end
+
+    local surface = game.get_surface(rec.surface_index)
+    if not (surface and surface.valid) then return "bad surface" end
+
+    local pos = rec.position
+    local rads = 20
+    local area = { {pos.x - rads, pos.y - rads}, {pos.x + rads, pos.y + rads} }
+
+    local all = surface.find_entities_filtered{ area = area } or {}
+    local ins = 0
+    for _, e in pairs(all) do
+      if e and e.valid and e.type == "inserter" then ins = ins + 1 end
+    end
+
+    return string.format("surf=%s pos=(%.1f,%.1f) ents=%d inserters=%d",
+      tostring(surface.name), pos.x, pos.y, #all, ins)
+  end,
+
+  tx_watch_dbg = function()
+    local d = storage and storage.tx_dbg_watch
+    if not d then return "no dbg record" end
+    return string.format(
+      "stamp=%s tick=%s scanned=%s added=%s watch=%s r=%s",
+      tostring(d.stamp), tostring(d.tick),
+      tostring(d.scanned), tostring(d.added),
+      tostring(d.watch_size), tostring(d.r)
+    )
+  end,
+
+  tx_watch_meta_size = function()
+    return storage and storage.tx_watch_meta and table_size(storage.tx_watch_meta) or 0
+  end,
+
+  tx_rebuild_now = function()
+    if not (Transaction and Transaction.rebuild_object_map and Transaction.rebuild_watchlist) then
+      return false
+    end
+    Transaction.rebuild_object_map()
+    Transaction.rebuild_watchlist()
+    return true
+  end
+})
+
 
 -- -----------------------------------------
 -- Blueprint GUI opened (delegated to blueprint module)

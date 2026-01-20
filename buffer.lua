@@ -2,29 +2,19 @@
 -- LogSim (Factorio 2.0)
 -- Buffer Module
 -- (Buffer lines, paging/windowing, GUI refresh throttling)
---
--- Version 0.5.0 first introduced in LogSim 0.5.0
--- Version 0.5.2 improved race condition handling & player cleanup
--- Version 0.5.3 STATIC mode localization
--- Version 0.5.4 protocol-aware UI (STATIC/LIVE mode)
--- Version 0.5.5 fully localized strings
 -- =========================================
 
 local M = require("config")
 
 local Buffer = {}
-Buffer.version = "0.5.5"
+Buffer.version = "0.8.0"
 
 -- -----------------------------------------
 -- Defaults
 -- -----------------------------------------
 
 function Buffer.ensure_defaults()
-  storage.buffer_lines     = storage.buffer_lines or {}
-  storage.buffer_view      = storage.buffer_view or {}
-  storage.gui_dirty        = storage.gui_dirty or {}
-  storage.perline_counter  = storage.perline_counter or 0
-  storage._buf_last_gui_refresh_tick = storage._buf_last_gui_refresh_tick or 0
+  M.ensure_storage_defaults(storage)
 end
 
 -- -----------------------------------------

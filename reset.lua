@@ -1,17 +1,12 @@
 -- =========================================
 -- LogSim (Factorio 2.0) 
--- Reset of simulation 
---
--- Version 0.2.0 first für LogSim 0.2.0
--- Version 0.2.1 reset_clear_pollution
--- Version 0.2.2 clear products_finished
--- Version 0.5.3 reset statistics (production, power, robots, etc.)
+-- Resets factory state (inventories, belts, pollution, statistics) in a controlled way.
 -- =========================================
 
 local M = require("config")
 
 local R = {}
-R.version = "0.5.3"
+R.version = "0.8.0"
 
 -- FIX: Added validity check for power switches
 local function set_factory_power(surface, state)

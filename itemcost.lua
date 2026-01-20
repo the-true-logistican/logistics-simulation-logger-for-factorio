@@ -7,30 +7,154 @@
 -- - Raw materials (recursive recipe resolution)
 -- - Time value (crafting time chain)
 -- - Energy cost (time × machine power)
--- Version 0.6.0
--- Version 0.6.1 - Localized CSV headers (cached on first use) inopertional
--- Vertion 0.6.3 - Cost of all items in the factory
+-- - fixed assets, unit costs and dependency closures for items and blueprints.
 -- =========================================
 
 local ItemCost = {}
- ItemCost.version = "0.6.3"
+
+local M = require("config")
+
+ ItemCost.version = "0.8.0"
 
 -- Cache for calculated costs to avoid recalculation
+-- =========================================
+-- BOUNDED LRU CACHE (Memory Safety)
+-- =========================================
+
+local MAX_CACHE_SIZE = M.MAX_CACHE_SIZE   -- Limit cache to prevent memory bloat
 local cost_cache = {}
+local cache_access_order = {}  -- Track access order for LRU eviction
+local cache_stats = {
+  hits = 0,
+  misses = 0,
+  evictions = 0,
+  total_requests = 0
+}
+
+local function parse_power_to_watts(v)
+  if v == nil then return nil end
+
+  -- Sometimes mods/prototypes may provide numbers (rare). Treat as W.
+  if type(v) == "number" then
+    if v > 0 then return v end
+    return nil
+  end
+
+  if type(v) ~= "string" then return nil end
+
+  -- normalize: "150kW" / "150 kW" / "1.2MW"
+  local s = v:gsub("%s+", ""):lower()
+  local num, unit = s:match("^([%d%.]+)([kmg]?w)$")
+  num = tonumber(num)
+  if not num or not unit then return nil end
+
+  local mul = 1
+  if unit == "kw" then mul = 1e3
+  elseif unit == "mw" then mul = 1e6
+  elseif unit == "gw" then mul = 1e9
+  elseif unit == "w" then mul = 1
+  else return nil end
+
+  local w = num * mul
+  if w <= 0 then return nil end
+  return w
+end
+
+local function prototype_power_w(entity_name)
+  if not entity_name then return nil end
+  local proto = prototypes.entity[entity_name]
+  if not proto then return nil end
+
+  -- energy_usage is typically a string like "150kW"
+  local ok, eu = pcall(function() return proto.energy_usage end)
+  if not ok then return nil end
+
+  return parse_power_to_watts(eu)
+end
+
+-- Get item from cache (updates LRU order)
+local function cache_get(key)
+  cache_stats.total_requests = cache_stats.total_requests + 1
+  
+  local value = cost_cache[key]
+  if value then
+    cache_stats.hits = cache_stats.hits + 1
+    
+    -- Update LRU: move to end
+    for i, k in ipairs(cache_access_order) do
+      if k == key then
+        table.remove(cache_access_order, i)
+        break
+      end
+    end
+    cache_access_order[#cache_access_order + 1] = key
+    
+    return value
+  end
+  
+  cache_stats.misses = cache_stats.misses + 1
+  return nil
+end
+
+-- Add item to cache (with LRU eviction if full)
+local function cache_set(key, value)
+  -- If already exists, update it
+  if cost_cache[key] then
+    cost_cache[key] = value
+    -- Move to end of LRU
+    for i, k in ipairs(cache_access_order) do
+      if k == key then
+        table.remove(cache_access_order, i)
+        break
+      end
+    end
+    cache_access_order[#cache_access_order + 1] = key
+    return
+  end
+  
+  -- Check if cache is full
+  if #cache_access_order >= MAX_CACHE_SIZE then
+    -- Evict oldest (least recently used)
+    local oldest_key = cache_access_order[1]
+    table.remove(cache_access_order, 1)
+    cost_cache[oldest_key] = nil
+    cache_stats.evictions = cache_stats.evictions + 1
+  end
+  
+  -- Add new entry
+  cost_cache[key] = value
+  cache_access_order[#cache_access_order + 1] = key
+end
+
+-- Get cache statistics (for debugging/monitoring)
+function ItemCost.get_cache_stats()
+  local hit_rate = cache_stats.total_requests > 0 
+    and (cache_stats.hits / cache_stats.total_requests * 100) 
+    or 0
+  
+  return {
+    hits = cache_stats.hits,
+    misses = cache_stats.misses,
+    evictions = cache_stats.evictions,
+    total_requests = cache_stats.total_requests,
+    hit_rate = hit_rate,
+    current_size = #cache_access_order,
+    max_size = MAX_CACHE_SIZE
+  }
+end
+
+-- Reset cache statistics
+function ItemCost.reset_cache_stats()
+  cache_stats = {
+    hits = 0,
+    misses = 0,
+    evictions = 0,
+    total_requests = 0
+  }
+end
 
 -- CSV Header cache - initialized on first use with player locale
 local csv_header_cache = nil
-
--- Standard machine power consumption (Watts)
-local MACHINE_POWER = {
-  ["assembling-machine-1"] = 75000,    -- 75 kW
-  ["assembling-machine-2"] = 150000,   -- 150 kW
-  ["assembling-machine-3"] = 375000,   -- 375 kW
-  ["electric-furnace"] = 180000,       -- 180 kW
-  ["chemical-plant"] = 210000,         -- 210 kW
-}
-
-local DEFAULT_MACHINE_POWER = MACHINE_POWER["assembling-machine-3"]
 
 -- Raw materials list (items with no recipe)
 local RAW_MATERIALS = {
@@ -117,17 +241,24 @@ end
 
 -- Get machine power for recipe category
 local function get_machine_power_for_recipe(recipe_proto)
-  if not recipe_proto then return DEFAULT_MACHINE_POWER end
-  
-  local category = recipe_proto.category
-  
-  if category == "smelting" then
-    return MACHINE_POWER["electric-furnace"]
-  elseif category == "chemistry" then
-    return MACHINE_POWER["chemical-plant"]
-  else
-    return DEFAULT_MACHINE_POWER
-  end
+  local fallback = M.ITEMCOST_POWER_FALLBACK_W or 375000
+
+  if not recipe_proto then return fallback end
+
+  local cat = recipe_proto.category
+
+  -- Category -> representative machine prototype name (from config)
+  local map = M.ITEMCOST_CATEGORY_MACHINE or {}
+  local ent_name =
+      (cat == "smelting" and map.smelting)
+   or (cat == "chemistry" and map.chemistry)
+   or map.default
+
+  local w = prototype_power_w(ent_name)
+  if w then return w end
+
+  -- Last resort
+  return fallback
 end
 
 -- =========================================
@@ -139,20 +270,25 @@ local function resolve_item_recursive(item_name, amount, force, depth, visited)
   visited = visited or {}
   amount = amount or 1
   
+  -- PATCH: Cache-Lookup am Anfang (nur bei depth=0, amount=1)
   local cache_key = item_name
-  if cost_cache[cache_key] and depth == 0 then
-    local cached = cost_cache[cache_key]
-    local result = {
-      raw_materials = {},
-      total_time = cached.total_time * amount,
-      total_energy = cached.total_energy * amount,
-    }
-    for mat, count in pairs(cached.raw_materials) do
-      result.raw_materials[mat] = count * amount
+  if depth == 0 then
+    local cached = cache_get(cache_key)
+    if cached then
+      -- Cache hit! Skaliere Ergebnis mit amount
+      local result = {
+        raw_materials = {},
+        total_time = cached.total_time * amount,
+        total_energy = cached.total_energy * amount,
+      }
+      for mat, count in pairs(cached.raw_materials) do
+        result.raw_materials[mat] = count * amount
+      end
+      return result
     end
-    return result
   end
   
+  -- Recursion depth limit
   if depth > 20 then
     return {
       raw_materials = { [item_name] = amount },
@@ -161,6 +297,7 @@ local function resolve_item_recursive(item_name, amount, force, depth, visited)
     }
   end
   
+  -- Circular dependency check
   if visited[item_name] then
     return {
       raw_materials = { [item_name] = amount },
@@ -169,6 +306,7 @@ local function resolve_item_recursive(item_name, amount, force, depth, visited)
     }
   end
   
+  -- Raw materials haben keine Recipe
   if RAW_MATERIALS[item_name] then
     return {
       raw_materials = { [item_name] = amount },
@@ -177,6 +315,7 @@ local function resolve_item_recursive(item_name, amount, force, depth, visited)
     }
   end
   
+  -- Recipe lookup
   local recipe = get_recipe_for_item(item_name, force)
   if not recipe then
     return {
@@ -186,6 +325,7 @@ local function resolve_item_recursive(item_name, amount, force, depth, visited)
     }
   end
   
+  -- Calculate how many times we need to craft
   local recipe_output = 1
   for _, product in pairs(recipe.products) do
     if product.name == item_name then
@@ -196,15 +336,18 @@ local function resolve_item_recursive(item_name, amount, force, depth, visited)
   
   local craft_count = math.ceil(amount / recipe_output)
   
+  -- Calculate time & energy for this recipe
   local crafting_time = get_crafting_time(recipe)
   local machine_power = get_machine_power_for_recipe(recipe)
   local recipe_time = crafting_time * craft_count
   local recipe_energy = recipe_time * machine_power
   
+  -- Mark as visited for circular dependency check
   local new_visited = {}
   for k, v in pairs(visited) do new_visited[k] = v end
   new_visited[item_name] = true
   
+  -- Recursive resolution of ingredients
   local total_raw = {}
   local total_time = recipe_time
   local total_energy = recipe_energy
@@ -235,15 +378,9 @@ local function resolve_item_recursive(item_name, amount, force, depth, visited)
     total_energy = total_energy,
   }
   
+  -- PATCH: Cache-Speicherung am Ende (nur bei depth=0, amount=1)
   if depth == 0 and amount == 1 then
-    cost_cache[cache_key] = {
-      raw_materials = {},
-      total_time = total_time,
-      total_energy = total_energy,
-    }
-    for mat, count in pairs(total_raw) do
-      cost_cache[cache_key].raw_materials[mat] = count
-    end
+    cache_set(cache_key, result)
   end
   
   return result
@@ -312,6 +449,9 @@ end
 
 function ItemCost.clear_cache()
   cost_cache = {}
+  cache_access_order = {}
+  cache_stats.evictions = cache_stats.evictions + #cache_access_order
+  
 end
 
 -- Format detailed per-item breakdown as semicolon table
@@ -628,5 +768,132 @@ function ItemCost.format_portfolio_unit_costs(unit_costs)
 end
 
 
+
+
+
+-- Format unit costs as semicolon table for MASTERDATA (blueprint + produced + portfolio)
+function ItemCost.format_masterdata_unit_costs(unit_costs)
+  local lines = {}
+  lines[#lines+1] = "# ----"
+  lines[#lines+1] = "# MASTERDATA_UNIT_COSTS (amount=1)"
+  lines[#lines+1] = "id;item;time_s;energy_kWh;materials"
+
+  if not unit_costs or next(unit_costs) == nil then
+    lines[#lines+1] = "NONE;0;0;"
+    return table.concat(lines, "\n")
+  end
+
+  local names = {}
+  for name, _ in pairs(unit_costs) do names[#names+1] = name end
+  table.sort(names)
+
+  local id = 0
+  for _, name in ipairs(names) do
+    local c = unit_costs[name] or {}
+    local time_s = tonumber(c.total_time or 0) or 0
+    local energy_kwh = (tonumber(c.total_energy or 0) or 0) / 3600000
+
+    local mats_str = ""
+    if c.raw_materials and next(c.raw_materials) then
+      local mats = {}
+      for mat, cnt in pairs(c.raw_materials) do
+        mats[#mats+1] = { name = mat, count = cnt }
+      end
+      table.sort(mats, function(a, b) return (a.count or 0) > (b.count or 0) end)
+
+      local parts = {}
+      local max_mats = 12
+      for i = 1, math.min(#mats, max_mats) do
+        local m = mats[i]
+        parts[#parts+1] = string.format("%s=%.1f", tostring(m.name), tonumber(m.count) or 0)
+      end
+      mats_str = table.concat(parts, ",")
+      if #mats > max_mats then
+        mats_str = mats_str .. string.format(",...(+%d)", #mats - max_mats)
+      end
+    end
+
+    id = id + 1
+    lines[#lines+1] = string.format("%d;%s;%.1f;%.3f;%s",
+      id, name, time_s, energy_kwh, mats_str)
+  end
+
+  return table.concat(lines, "\n")
+end
+
+-- Find an enabled recipe that produces item_name (same idea as calculate_item_cost)
+local function find_recipe_for_item(item_name, force)
+  force = force or game.forces.player
+
+  for recipe_name, recipe_proto in pairs(prototypes.recipe) do
+    local r = force.recipes[recipe_name]
+    if r and r.enabled then
+      if recipe_proto.main_product and recipe_proto.main_product.name == item_name then
+        return recipe_proto
+      end
+      for _, product in pairs(recipe_proto.products or {}) do
+        if product and product.name == item_name then
+          return recipe_proto
+        end
+      end
+    end
+  end
+  return nil
+end
+
+-- Collect full dependency closure (all intermediates + terminals), by ingredient graph.
+-- This does NOT collapse into raw_materials; it keeps everything that appears on the path.
+function ItemCost.collect_dependency_items(item_name, out_set, force, depth, visited)
+  out_set = out_set or {}
+  force = force or game.forces.player
+  depth = depth or 0
+  visited = visited or {}
+
+  if not item_name or item_name == "" then return out_set end
+  if visited[item_name] then return out_set end
+  visited[item_name] = true
+
+  if depth > M.COLLECT_DEPENDENC_DEPTH then return out_set end
+
+  local recipe = find_recipe_for_item(item_name, force)
+  if not recipe or not recipe.ingredients then
+    return out_set
+  end
+
+  for _, ing in pairs(recipe.ingredients) do
+    local ing_name = ing and ing.name
+    if ing_name and ing_name ~= "" then
+      out_set[ing_name] = true
+      ItemCost.collect_dependency_items(ing_name, out_set, force, depth + 1, visited)
+    end
+  end
+
+  return out_set
+end
+
+-- Expand a whole seed set into full closure up to terminals.
+function ItemCost.expand_item_set_full(seed_set, force)
+  force = force or game.forces.player
+  local out = {}
+
+  if not seed_set then return out end
+
+  -- keep seeds
+  for name, _ in pairs(seed_set) do
+    if name and name ~= "" then out[name] = true end
+  end
+
+  -- expand all seeds
+  for name, _ in pairs(seed_set) do
+    if name and name ~= "" then
+      local deps = ItemCost.collect_dependency_items(name, {}, force)
+      for dep, _ in pairs(deps) do
+        out[dep] = true
+      end
+    end
+  end
+
+  return out
+end
 
 return ItemCost
