@@ -1,12 +1,16 @@
 -- =========================================
 -- LogSim (Factorio 2.0) 
 -- All GUI creation and interaction logic (buffer, transactions, export, reset, blueprint views).
+-- version 0.8.0 first complete working version
+-- version 0.8.1 tx window with buttons <<  <  >  >> 
+--               simple filter for transactions with checkboxes
+--
 -- =========================================
 
 local M = require("config")
 
 local UI = {}
-UI.version = "0.8.0"
+UI.version = "0.8.1"
 
 -- =======================
 -- functions for markers
@@ -691,28 +695,75 @@ function UI.show_tx_gui(player)
     direction = "horizontal"
   }
 
-  top.add{
-    type = "sprite-button",
-    name = M.GUI_TX_BTN_OLDER,
-    sprite = "utility/left_arrow",
-    style = "tool_button",
-    tooltip = {"logistics_simulation.tx_older"}
-  }
-
+  -- <<  ganz zum Anfang
   top.add{
     type = "button",
-    name = M.GUI_TX_BTN_TAIL,
-    caption = {"logistics_simulation.tx_live"},
-    tooltip = {"logistics_simulation.tx_live_tooltip"}
+    name = M.GUI_TX_BTN_HOME,
+    style = "tool_button",
+    caption = "<<",
+    tooltip = {"logistics_simulation.tx_home_tooltip"}
   }
 
+  -- <  eine Seite zurück
   top.add{
-    type = "sprite-button",
-    name = M.GUI_TX_BTN_NEWER,
-    sprite = "utility/right_arrow",
+    type = "button",
+    name = M.GUI_TX_BTN_OLDER,
     style = "tool_button",
-    tooltip = {"logistics_simulation.tx_newer"}
+    caption = "<",
+    tooltip = {"logistics_simulation.tx_page_older_tooltip"}
   }
+
+  -- >  eine Seite vor
+  top.add{
+    type = "button",
+    name = M.GUI_TX_BTN_NEWER,
+    style = "tool_button",
+    caption = ">",
+    tooltip = {"logistics_simulation.tx_page_newer_tooltip"}
+  }
+
+  -- >>  ganz zum Ende
+  top.add{
+    type = "button",
+    name = M.GUI_TX_BTN_END,
+    style = "tool_button",
+    caption = ">>",
+    tooltip = {"logistics_simulation.tx_end_tooltip"}
+  }
+
+ -- Filter-Checkboxen (nur Anzeige, noch keine Wirkung)
+  top.add{ type = "empty-widget" }.style.width = 5  -- kleiner Abstand
+
+  top.add{
+    type = "checkbox",
+    name = "logsim_tx_chk_inbound",
+    state = true,
+    caption = {"logistics_simulation.tx_filter_inbound"},
+    tooltip = {"logistics_simulation.tx_filter_inbound_tooltip"}
+  }
+  top.add{
+    type = "checkbox",
+    name = "logsim_tx_chk_outbound",
+    state = true,
+    caption = {"logistics_simulation.tx_filter_outbound"},
+    tooltip = {"logistics_simulation.tx_filter_outbound_tooltip"}
+  }
+  top.add{
+    type = "checkbox",
+    name = "logsim_tx_chk_transit",
+    state = true,
+    caption = {"logistics_simulation.tx_filter_transit"},
+    tooltip = {"logistics_simulation.tx_filter_transit_tooltip"}
+  }
+  top.add{
+    type = "checkbox",
+    name = "logsim_tx_chk_other",
+    state = false,
+    caption = {"logistics_simulation.tx_filter_other"},
+    tooltip = {"logistics_simulation.tx_filter_other_tooltip"}
+  }
+
+  top.add{ type = "empty-widget" }.style.width = 16
 
   top.add{
     type = "button",
@@ -742,9 +793,6 @@ function UI.show_tx_gui(player)
   box.word_wrap = false
   box.style.width = M.GUI_BUFFER_WIDTH
   box.style.height = M.GUI_BUFFER_HEIGHT
-
-  storage.tx_view = storage.tx_view or {}
-  storage.tx_view[player.index] = { start_line = 1, end_line = 0, follow = true }
 end
 
 function UI.close_tx_gui(player)

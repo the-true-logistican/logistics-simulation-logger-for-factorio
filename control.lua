@@ -18,7 +18,9 @@
 -- Version 0.6.2 export to file csv/json
 -- Version 0.6.3 stabilising of the mod
 -- Version 0.7.x transaction based on inserter action
--- Version 0.8.0 complete accounting with export
+-- version 0.8.0 first complete working version
+--               complete accounting with export
+-- version 0.8.1 tx window with buttons <<  <  >  >> 
 -- =========================================
 
 local DEBUG = true
@@ -640,9 +642,15 @@ local function click_tx_newer(event)
   if Transaction and Transaction.tx_page_newer then Transaction.tx_page_newer(player) end
 end
 
-local function click_tx_tail(event)
+local function click_tx_home(event)
   local player = game.players[event.player_index]
-  if Transaction and Transaction.tx_tail then Transaction.tx_tail(player) end
+  if Transaction and Transaction.tx_home then Transaction.tx_home(player) end
+end
+
+local function click_tx_end(event)
+  local player = game.players[event.player_index]
+  if Transaction and Transaction.tx_end then Transaction.tx_end(player)
+  elseif Transaction and Transaction.tx_tail then Transaction.tx_tail(player) end
 end
 
 local function click_tx_copy(event)
@@ -909,8 +917,10 @@ script.on_event(defines.events.on_gui_click, function(event)
     click_tx_hide(event)
   elseif name == M.GUI_TX_BTN_OLDER then
     click_tx_older(event)
-  elseif name == M.GUI_TX_BTN_TAIL then
-    click_tx_tail(event)
+  elseif name == M.GUI_TX_BTN_HOME then
+    click_tx_home(event)
+  elseif name == M.GUI_TX_BTN_END then
+    click_tx_end(event)
   elseif name == M.GUI_TX_BTN_NEWER then
     click_tx_newer(event)
   elseif name == M.GUI_TX_BTN_COPY then

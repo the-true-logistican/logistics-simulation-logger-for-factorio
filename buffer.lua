@@ -2,6 +2,10 @@
 -- LogSim (Factorio 2.0)
 -- Buffer Module
 -- (Buffer lines, paging/windowing, GUI refresh throttling)
+--
+-- version 0.8.0 first complete working version
+-- version 0.8.1 ring buffer M.BUFFER_MAX_LINES load/save secure
+--
 -- =========================================
 
 local M = require("config")
@@ -17,12 +21,116 @@ function Buffer.ensure_defaults()
   M.ensure_storage_defaults(storage)
 end
 
+
+
+-- -----------------------------------------
+-- Ringbuffer helpers (O(1) append; no table.remove(1))
+-- -----------------------------------------
+
+local function buf_rb_get_max()
+  return tonumber(storage.buffer_max_lines) or tonumber(M.BUFFER_MAX_LINES) or 500000
+end
+
+local function buf_rb_count()
+  return tonumber(storage.buffer_size) or 0
+end
+
+local function buf_rb_head()
+  local h = tonumber(storage.buffer_head) or 1
+  if h < 1 then h = 1 end
+  return h
+end
+
+local function buf_rb_phys(i, max, head)
+  -- logical i in [1..size] -> physical index in [1..max]
+  return ((head + (i - 1) - 1) % max) + 1
+end
+
+local function buf_rb_get_line(i)
+  local max = buf_rb_get_max()
+  local size = buf_rb_count()
+  if i < 1 or i > size then return nil end
+  local head = buf_rb_head()
+  local p = buf_rb_phys(i, max, head)
+  return storage.buffer_lines[p]
+end
+
+local function buf_rb_resize(new_max)
+  new_max = tonumber(new_max) or buf_rb_get_max()
+  if new_max < 1 then new_max = 1 end
+
+  local old_max = buf_rb_get_max()
+  local old_size = buf_rb_count()
+  local old_head = buf_rb_head()
+  local old_lines = storage.buffer_lines or {}
+
+  local keep = old_size
+  if keep > new_max then keep = new_max end
+
+  local new_lines = {}
+  if keep > 0 then
+    -- keep the newest 'keep' lines
+    local start_logical = old_size - keep + 1
+    for j = 1, keep do
+      local i = start_logical + (j - 1)
+      local p = buf_rb_phys(i, old_max, old_head)
+      new_lines[j] = old_lines[p]
+    end
+  end
+
+  storage.buffer_lines = new_lines
+  storage.buffer_max_lines = new_max
+  storage.buffer_head = 1
+  storage.buffer_size = keep
+end
+
+local function buf_rb_ensure()
+  -- migration: if size not set, assume linear table
+  if storage.buffer_lines == nil then storage.buffer_lines = {} end
+  if storage.buffer_head == nil then storage.buffer_head = 1 end
+  if storage.buffer_size == nil then storage.buffer_size = #storage.buffer_lines end
+  if storage.buffer_max_lines == nil then storage.buffer_max_lines = tonumber(M.BUFFER_MAX_LINES) or 500000 end
+
+  local max_cfg = tonumber(storage.buffer_max_lines) or tonumber(M.BUFFER_MAX_LINES) or 500000
+  local max_now = buf_rb_get_max()
+  if max_now ~= max_cfg then
+    storage.buffer_max_lines = max_cfg
+    max_now = max_cfg
+  end
+
+  -- If max changed (e.g., config), resize to match.
+  -- Detect by comparing table length to max? Better: store last_max.
+  if storage._buffer_last_max ~= max_now then
+    storage._buffer_last_max = max_now
+    buf_rb_resize(max_now)
+  end
+
+  -- clamp head/size
+  if storage.buffer_head < 1 then storage.buffer_head = 1 end
+  if storage.buffer_size < 0 then storage.buffer_size = 0 end
+  if storage.buffer_size > max_now then storage.buffer_size = max_now end
+end
+
 -- -----------------------------------------
 -- Basics
 -- -----------------------------------------
 
 function Buffer.count()
-  return (storage.buffer_lines and #storage.buffer_lines) or 0
+  Buffer.ensure_defaults()
+  buf_rb_ensure()
+  return buf_rb_count()
+end
+
+function Buffer.snapshot_lines()
+  Buffer.ensure_defaults()
+  buf_rb_ensure()
+
+  local n = buf_rb_count()
+  local out = {}
+  for i = 1, n do
+    out[i] = buf_rb_get_line(i)
+  end
+  return out, n
 end
 
 function Buffer.mark_dirty_for_open_guis()
@@ -36,16 +144,28 @@ end
 
 function Buffer.append_line(line)
   Buffer.ensure_defaults()
+  buf_rb_ensure()
 
-  storage.buffer_lines[#storage.buffer_lines + 1] = tostring(line)
+  local max = buf_rb_get_max()
+  local size = buf_rb_count()
+  local head = buf_rb_head()
 
-  local MAX_LINES = M.BUFFER_MAX_LINES
-  while #storage.buffer_lines > MAX_LINES do
-    table.remove(storage.buffer_lines, 1)
+  line = tostring(line)
+
+  if size < max then
+    local p = buf_rb_phys(size + 1, max, head)
+    storage.buffer_lines[p] = line
+    storage.buffer_size = size + 1
+  else
+    -- overwrite oldest
+    storage.buffer_lines[head] = line
+    storage.buffer_head = (head % max) + 1
+    storage.buffer_size = max
   end
 
   Buffer.mark_dirty_for_open_guis()
 end
+
 
 function Buffer.append_multiline(text)
   if not text then return end
@@ -60,9 +180,9 @@ end
 
 function Buffer.get_text_range(start_line, end_line)
   Buffer.ensure_defaults()
+  buf_rb_ensure()
 
-  local lines = storage.buffer_lines
-  local n = #lines
+  local n = buf_rb_count()
   if n == 0 then return "" end
 
   start_line = math.max(1, math.min(start_line, n))
@@ -71,22 +191,24 @@ function Buffer.get_text_range(start_line, end_line)
 
   local t = {}
   for i = start_line, end_line do
-    t[#t+1] = lines[i]
+    t[#t+1] = buf_rb_get_line(i) or ""
   end
   return table.concat(t, "\n") .. "\n"
 end
 
+
 function Buffer.compute_tail_window(max_chars)
   Buffer.ensure_defaults()
+  buf_rb_ensure()
 
-  local lines = storage.buffer_lines
-  local n = #lines
+  local n = buf_rb_count()
   if n == 0 then return 1, 0 end
 
   local chars = 1
   local start = n
   while start > 1 do
-    local add = #lines[start-1] + 1
+    local prev = buf_rb_get_line(start - 1) or ""
+    local add = #prev + 1
     if chars + add > max_chars then break end
     chars = chars + add
     start = start - 1
@@ -96,9 +218,9 @@ end
 
 function Buffer.fit_window_to_chars(end_line, max_chars)
   Buffer.ensure_defaults()
+  buf_rb_ensure()
 
-  local lines = storage.buffer_lines
-  local n = #lines
+  local n = buf_rb_count()
   if n == 0 then return 1, 0 end
 
   end_line = math.max(1, math.min(end_line, n))
@@ -106,7 +228,8 @@ function Buffer.fit_window_to_chars(end_line, max_chars)
   local chars = 1
   local start = end_line
   while start > 1 do
-    local add = #lines[start-1] + 1
+    local prev = buf_rb_get_line(start - 1) or ""
+    local add = #prev + 1
     if chars + add > max_chars then break end
     chars = chars + add
     start = start - 1
@@ -115,21 +238,20 @@ function Buffer.fit_window_to_chars(end_line, max_chars)
   return start, end_line
 end
 
-function Buffer.fit_window_forward_to_chars(start_line, end_limit, max_chars)
+function Buffer.fit_window_forward_to_chars(start_line, max_chars)
   Buffer.ensure_defaults()
+  buf_rb_ensure()
 
-  local lines = storage.buffer_lines
-  local n = #lines
+  local n = buf_rb_count()
   if n == 0 then return 1, 0 end
 
   start_line = math.max(1, math.min(start_line, n))
-  end_limit  = math.max(start_line, math.min(end_limit or n, n))
 
   local chars = 1
   local e = start_line
-  
-  while e < end_limit and e < n do
-    local add = #lines[e + 1] + 1
+  while e < n do
+    local nxt = buf_rb_get_line(e + 1) or ""
+    local add = #nxt + 1
     if chars + add > max_chars then break end
     chars = chars + add
     e = e + 1

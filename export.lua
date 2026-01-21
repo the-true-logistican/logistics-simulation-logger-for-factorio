@@ -1,6 +1,11 @@
 -- =========================================
 -- LogSim (Factorio 2.0) 
 -- Exports protocol, inventory and transaction data to CSV and JSON files.
+-- 
+-- version 0.8.0 first complete working version
+-- version 0.8.1 ring buffer M.TX_MAX_EVENTS load/save secure
+--               ring buffer M.BUFFER_MAX_LINES load/save secure
+--
 -- =========================================
 
 local M = require("config")
@@ -11,6 +16,17 @@ local Util = require("utility")
 
 local Export = {}
 Export.version = "0.8.0"
+
+-- Build a JSON-friendly TX array containing ONLY the used portion.
+-- Order is not guaranteed/required (Martin), but we still export in logical (oldest->newest) order for convenience.
+function Export._tx_events_for_json(tx_n)
+  local out = {}
+  for i = 1, tx_n do
+    out[#out+1] = Transaction.tx_get_event(i)
+  end
+  return out
+end
+
 -- Helper: Find element by name in GUI tree
 local function find_by_name(root, target)
   if not (root and root.valid) then return nil end
@@ -48,8 +64,8 @@ end
 function Export.export_tx_csv(player)
   Buffer.ensure_defaults()
 
-  local tx = storage.tx_events
-  if not tx or #tx == 0 then
+  local tx_n = (Transaction.tx_line_count() or 0)
+  if tx_n == 0 then
     player.print({"logistics_simulation.export_no_data"})
     return
   end
@@ -60,7 +76,7 @@ function Export.export_tx_csv(player)
   local surface = player.surface
 
   -- Build exactly the same lines as the TX viewer
-  local total_lines = (Transaction.tx_line_count() or 0) + 2
+  local total_lines = tx_n + 2
   local lines = {}
 
   for i = 1, total_lines do
@@ -77,7 +93,7 @@ function Export.export_tx_csv(player)
   end)
 
   if ok then
-    player.print({"logistics_simulation.export_success", filepath, #lines})
+    player.print({"logistics_simulation.export_success", filepath, line_count})
   else
     player.print({"logistics_simulation.export_failed", tostring(err)})
   end
@@ -91,8 +107,8 @@ end
 function Export.export_tx_json(player)
   Buffer.ensure_defaults()
 
-  local tx = storage.tx_events
-  if not tx or #tx == 0 then
+  local tx_n = (Transaction.tx_line_count() or 0)
+  if tx_n == 0 then
     player.print({"logistics_simulation.export_no_data"})
     return
   end
@@ -106,10 +122,10 @@ function Export.export_tx_json(player)
       run_name      = storage.run_name or "unnamed",
       start_tick    = storage.run_start_tick or 0,
       export_tick   = game.tick,
-      event_count   = #tx,
+      event_count   = tx_n,
       kind          = "transactions"
     },
-    tx_events = tx
+    tx_events = Export._tx_events_for_json(tx_n)
   }
 
   local json_str = Export.table_to_json(data)
@@ -119,7 +135,7 @@ function Export.export_tx_json(player)
   end)
 
   if ok then
-    player.print({"logistics_simulation.export_success", filepath, #tx})
+    player.print({"logistics_simulation.export_success", filepath, tx_n})
   else
     player.print({"logistics_simulation.export_failed", tostring(err)})
   end
@@ -215,8 +231,8 @@ end
 function Export.export_csv(player)
   Buffer.ensure_defaults()
   
-  local lines = storage.buffer_lines or {}
-  if #lines == 0 then
+  local lines, line_count = Buffer.snapshot_lines()
+  if line_count == 0 then
     player.print({"logistics_simulation.export_no_data"})
     return
   end
@@ -244,8 +260,8 @@ end
 function Export.export_json(player)
   Buffer.ensure_defaults()
   
-  local lines = storage.buffer_lines or {}
-  if #lines == 0 then
+  local lines, line_count = Buffer.snapshot_lines()
+  if line_count == 0 then
     player.print({"logistics_simulation.export_no_data"})
     return
   end
@@ -257,7 +273,7 @@ function Export.export_json(player)
       run_name = storage.run_name or "unnamed",
       start_tick = storage.run_start_tick or 0,
       export_tick = game.tick,
-      line_count = #lines,
+      line_count = line_count,
       sample_interval = storage.sample_interval or M.SAMPLE_INTERVAL_TICKS
     },
     registrations = {

@@ -1,11 +1,17 @@
 -- =========================================
 -- LogSim (Factorio 2.0) 
 -- Central configuration and storage initialization for LogSim (constants, GUI IDs, defaults).
+--
+-- version 0.8.0 first complete working version
+-- version 0.8.1 tx window with buttons <<  <  >  >> 
+--               ring buffer M.TX_MAX_EVENTS load/save secure
+--               ring buffer M.BUFFER_MAX_LINES load/save secure
+--
 -- =========================================
 
 local M = {}
 
-M.version = "0.8.0"
+M.version = "0.8.1"
 
 -- =====================================
 -- Technical Configuration
@@ -17,9 +23,9 @@ M.SAMPLE_INTERVAL_TICKS = 173 -- (60fps) this is 10min in ISO-Time (exact 173,6)
 M.POWER_SAMPLES = 5           -- ~1.0s (5 * 0.2s)  
 M.POLLUTION_SAMPLES = 5       -- ~1.0s (5 * 0.2s)
 M.GUI_REFRESH_TICKS = 10      -- throttle GUI refresh (ticks)
-M.BUFFER_MAX_LINES = 20000    -- max number of complete inventory
+M.BUFFER_MAX_LINES = 5000    -- max number of complete inventory
 M.TEXT_MAX = 1500000
-M.TX_MAX_EVENTS = 500000      -- max number of transaction records kept in memory
+M.TX_MAX_EVENTS = 50000     -- max number of transaction records kept in memory
 M.CHUNK_SIZE = 32 
 M.MAX_TELEGRAM_LENGTH = 2000
 M.BUFFER_PAGE_LINES = 200
@@ -131,7 +137,9 @@ M.GUI_TX_BOX   = "logsim_tx_box"
 M.GUI_TX_CLOSE = "logsim_tx_close"
 
 M.GUI_TX_BTN_OLDER = "logsim_tx_older"
-M.GUI_TX_BTN_TAIL  = "logsim_tx_tail"
+M.GUI_TX_BTN_HOME  = "logsim_tx_home"
+M.GUI_TX_BTN_END   = "logsim_tx_end"
+M.GUI_TX_BTN_TAIL  = M.GUI_TX_BTN_END  -- backward alias
 M.GUI_TX_BTN_NEWER = "logsim_tx_newer"
 M.GUI_TX_LBL_RANGE = "logsim_tx_range"
 M.GUI_TX_BTN_COPY  = "logsim_tx_copy"
@@ -240,6 +248,56 @@ local function apply_sample_interval_from_config()
 end
 
 
+
+local function apply_tx_max_events_from_config()
+  -- Config value
+  local cfg = M.TX_MAX_EVENTS
+
+  -- Validate config
+  if type(cfg) ~= "number" or cfg < 1 then
+    -- hard warning, but KEEP old stored value so the mod continues
+    log(string.format("[LogSim][ERROR] Invalid config TX_MAX_EVENTS=%s. Keeping stored tx_max_events=%s",
+      tostring(cfg), tostring(storage.tx_max_events)))
+
+    -- Optional: tell players in-game once (safe + visible)
+    for _, p in pairs(game.players) do
+      if p and p.valid then
+        p.print({"", "[LogSim] ERROR: TX_MAX_EVENTS invalid (", tostring(cfg),
+                 "). Keeping old value: ", tostring(storage.tx_max_events)})
+      end
+    end
+    return
+  end
+
+  -- Config is valid -> ALWAYS apply (this is what you want)
+  storage.tx_max_events = cfg
+end
+
+
+
+local function apply_buffer_max_lines_from_config()
+  -- Config value
+  local cfg = M.BUFFER_MAX_LINES
+
+  -- Validate config
+  if type(cfg) ~= "number" or cfg < 1 then
+    log(string.format("[LogSim][ERROR] Invalid config BUFFER_MAX_LINES=%s. Keeping stored buffer_max_lines=%s",
+      tostring(cfg), tostring(storage.buffer_max_lines)))
+
+    for _, p in pairs(game.players) do
+      if p and p.valid then
+        p.print({"", "[LogSim] ERROR: BUFFER_MAX_LINES invalid (", tostring(cfg),
+                 "). Keeping old value: ", tostring(storage.buffer_max_lines)})
+      end
+    end
+    return
+  end
+
+  -- Config is valid -> ALWAYS apply (buffer.lua reacts if changed)
+  storage.buffer_max_lines = cfg
+end
+
+
 function M.ensure_storage_defaults(st)
   -- allow explicit table (tests), default: global storage
   st = st or storage
@@ -261,6 +319,12 @@ function M.ensure_storage_defaults(st)
   -- -------- buffer --------
   st.buffer_lines     = st.buffer_lines or {}
   st.buffer_view      = st.buffer_view or {}
+
+  -- Buffer ring state (migration-safe)
+  if st.buffer_head == nil then st.buffer_head = 1 end
+  if st.buffer_size == nil then st.buffer_size = #st.buffer_lines end
+  -- stored max (driven by config)
+  if st.buffer_max_lines == nil then st.buffer_max_lines = (M.BUFFER_MAX_LINES or 500000) end
 
 -- -------- tx viewer --------
 st.tx_view          = st.tx_view or {}

@@ -1,6 +1,6 @@
 {
   "name": "logistics_simulation",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "title": "Logistics Simulation Logger",
   "author": "Martin",
   "description": "Experimental logistics simulation and logging framework with multi-surface, multiplayer support, and statistics reset",

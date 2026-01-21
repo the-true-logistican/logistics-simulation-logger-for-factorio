@@ -7,9 +7,9 @@
 --   Each physical move is represented as TWO postings:
 --     1) TAKE (source decreases)
 --     2) GIVE (destination increases)
---     3) OBJ_TRANSIT    = "T00"
---     4) OBJ_SHIP       = "SHIP"
---     5) local OBJ_RECV = "RECV"
+--     3) OBJ_TRANSIT = "T00"
+--     4) OBJ_SHIP    = "SHIP"
+--     5) OBJ_RECV    = "RECV"
 --
 -- Rules (Martin):
 --   - Full inventory snapshots remain as anchors (handled elsewhere)
@@ -20,6 +20,13 @@
 --   - Optional: mark "participating" inserters in yellow with text Ixx
 --   - Allow explicitly marking watched inserters as "active" (green)
 --   - Active boundary inserters represent Shipping/Receiving interface
+--
+-- version 0.8.0 first complete working version
+-- version 0.8.1 tx window with buttons <<  <  >  >> 
+--               number of items in transactipons from/to belts corrected
+--               simple filter for transactions with checkboxes
+--               ring buffer M.TX_MAX_EVENTS load/save secure
+--
 -- =========================================
 
 local Config = require("config")
@@ -27,7 +34,11 @@ local UI = require("ui")
 local Util = require("utility")  -- fly() lives here
 
 local Transaction = {}
-Transaction.version = "0.8.0"
+Transaction.version = "0.8.1"
+
+-- forward declarations (needed because ensure_defaults() uses them)
+local tx_rb_ensure
+local tx_rb_resize
 
 -- -----------------------------------------
 -- Defaults / Storage
@@ -35,6 +46,19 @@ Transaction.version = "0.8.0"
 
 local function ensure_defaults()
   Config.ensure_storage_defaults(storage)
+
+  -- Keep TX ringbuffer settings in sync with config.lua across save/load.
+  -- Otherwise old values from the save will "stick" forever.
+  tx_rb_ensure()
+
+  local desired_max =
+    (Config.TX_MAX_EVENTS)
+    or (Config.M and Config.M.TX_MAX_EVENTS)
+    or 500000
+
+  if storage.tx_max_events ~= desired_max then
+    tx_rb_resize(desired_max)
+  end
 end
 
 Transaction.ensure_defaults = ensure_defaults
@@ -230,9 +254,128 @@ local function virtual_add(obj, item, delta, qual)
   end
 end
 
+tx_rb_ensure = function()
+  -- Ringbuffer state (O(1) push, O(1) random access in logical order)
+  storage.tx_events = storage.tx_events or {}
+
+  -- Max events can be configured (defaults to 500k)
+  storage.tx_max_events = storage.tx_max_events or 500000
+
+  -- Migration: if we already have a linear array but no rb state, initialize rb state.
+  if storage.tx_head == nil or storage.tx_write == nil or storage.tx_size == nil then
+    local t = storage.tx_events
+    local n = #t
+
+    storage.tx_head  = 1
+    storage.tx_write = n + 1
+    storage.tx_size  = n
+
+    -- Ensure write stays in [1..max] even if table is larger than max
+    local max = storage.tx_max_events
+    if n > max then
+      -- Keep only the last `max` events, in-place, without shifting big tables repeatedly.
+      -- We rebuild into a fresh array once (migration only).
+      local newt = {}
+      local start = n - max + 1
+      for i = 1, max do
+        newt[i] = t[start + (i - 1)]
+      end
+      storage.tx_events = newt
+      storage.tx_head  = 1
+      storage.tx_write = max + 1
+      storage.tx_size  = max
+      t = storage.tx_events
+      n = max
+    end
+
+    -- Assign monotonic IDs if missing (so Excel references remain stable across wrap-around).
+    storage.tx_seq = storage.tx_seq or 0
+    for i = 1, n do
+      local ev = t[i]
+      if ev and ev.id == nil then
+        storage.tx_seq = storage.tx_seq + 1
+        ev.id = storage.tx_seq
+      elseif ev and type(ev.id) == "number" and ev.id > storage.tx_seq then
+        storage.tx_seq = ev.id
+      end
+    end
+  end
+
+  -- Normalize fields
+  storage.tx_seq  = storage.tx_seq  or 0
+  storage.tx_head = storage.tx_head or 1
+  storage.tx_size = storage.tx_size or 0
+  storage.tx_write = storage.tx_write or 1
+
+  -- Clamp indices into bounds
+  local max = storage.tx_max_events
+  if storage.tx_head < 1 or storage.tx_head > max then storage.tx_head = 1 end
+  if storage.tx_write < 1 or storage.tx_write > max then storage.tx_write = 1 end
+  if storage.tx_size < 0 then storage.tx_size = 0 end
+  if storage.tx_size > max then storage.tx_size = max end
+end
+
+tx_rb_resize = function(new_max)
+  tx_rb_ensure()
+
+  new_max = tonumber(new_max) or 500000
+  if new_max < 1 then new_max = 1 end
+
+  local old_max  = storage.tx_max_events or new_max
+  local old_size = storage.tx_size or 0
+  local old_head = storage.tx_head or 1
+  local old_ev   = storage.tx_events or {}
+
+  -- Keep the newest events when shrinking (most useful for analysis / startup behavior).
+  local keep = old_size
+  if keep > new_max then keep = new_max end
+
+  local new_ev = {}
+  if keep > 0 then
+    local start_logical = old_size - keep + 1  -- 1..old_size
+    for j = 1, keep do
+      local i = start_logical + (j - 1)
+      local phys = ((old_head + (i - 1) - 1) % old_max) + 1
+      new_ev[j] = old_ev[phys]
+    end
+  end
+
+  storage.tx_events     = new_ev
+  storage.tx_max_events = new_max
+  storage.tx_head       = 1
+  storage.tx_size       = keep
+  storage.tx_write      = (keep % new_max) + 1
+
+  -- If TX GUI is open, mark it dirty so it refreshes after resize.
+  if Transaction.tx_mark_dirty_for_open_guis then
+    Transaction.tx_mark_dirty_for_open_guis()
+  end
+end
+
+local function tx_rb_get_event(i)
+  -- i: 1..tx_size (logical order: oldest -> newest)
+  if not i then return nil end
+  local size = storage.tx_size or 0
+  if i < 1 or i > size then return nil end
+  local max = storage.tx_max_events or 500000
+  local head = storage.tx_head or 1
+  local phys = ((head + (i - 1) - 1) % max) + 1
+  return storage.tx_events and storage.tx_events[phys] or nil
+end
+
 local function push_event(ev)
-  local t = storage.tx_events
-  t[#t + 1] = ev
+  tx_rb_ensure()
+
+  -- stable, monotonic ID (do NOT derive from list index; ringbuffer wraps)
+  storage.tx_seq = (storage.tx_seq or 0) + 1
+  ev.id = storage.tx_seq
+
+  local t   = storage.tx_events
+  local max = storage.tx_max_events or 500000
+  local w   = storage.tx_write or 1
+  local size = storage.tx_size or 0
+
+  t[w] = ev
 
   -- update running balances for virtual buffers (T00/SHIP/RECV)
   if ev and (ev.obj == "T00" or ev.obj == "SHIP" or ev.obj == "RECV") then
@@ -245,23 +388,26 @@ local function push_event(ev)
       end
     end
   end
-  
+
+  -- advance ringbuffer pointers (O(1), no table shifting)
+  if size < max then
+    storage.tx_size = size + 1
+  else
+    -- buffer full: overwrite oldest, so oldest pointer advances
+    local head = storage.tx_head or 1
+    storage.tx_head = (head % max) + 1
+  end
+
+  storage.tx_write = (w % max) + 1
+
   -- If TX GUI is open, mark it dirty so it refreshes (LIVE mode follows tail).
   if Transaction.tx_mark_dirty_for_open_guis then
     Transaction.tx_mark_dirty_for_open_guis()
   end
-
-  local max = storage.tx_max_events or 500000
-  if #t > max then
-    local overflow = #t - max
-    for _ = 1, overflow do
-      table.remove(t, 1)
-    end
-  end
 end
 
 local function safe_get(field_fn)
-  local ok, v = pcall(field_fn)
+local ok, v = pcall(field_fn)
   if ok then return v end
   return nil
 end
@@ -710,62 +856,59 @@ end
 -- TX Viewer helpers (for UI text-box paging)
 -- -----------------------------------------
 
+-- We intentionally keep the TX viewer "one window per page".
+-- The text-box should never contain more lines than fit into the window,
+-- so the built-in text-box scroll bar becomes irrelevant.
+local TX_WINDOW_LINES = 24  -- measured in UI: exactly 25 lines fit
+
 function Transaction.tx_line_count()
   ensure_defaults()
-  local n = (storage.tx_events and #storage.tx_events) or 0
-  return n + 2
+  tx_rb_ensure()
+  return (storage.tx_size or 0)
 end
 
--- Item key formatter: include quality only if it's not "normal"
-local function fmt_item_key(k)
-  if not k then return "" end
-
-  if type(k) == "string" then
-    local base, q = k:match("^(.-)@(.+)$")
-    if base and q then
-      if q == "normal" then return base end
-      return base .. "@" .. q
-    end
-    return k
-  end
-
-  if type(k) == "table" then
-    local name = k.name or k.item or ""
-    local q = k.quality
-    if not q or q == "normal" then
-      return name
-    end
-    return name .. "@" .. tostring(q)
-  end
-
-  return tostring(k)
+function Transaction.tx_get_event(i)
+  ensure_defaults()
+  tx_rb_ensure()
+  return tx_rb_get_event(i)
 end
+
+function Transaction.tx_count()
+  ensure_defaults()
+  tx_rb_ensure()
+  return (storage.tx_size or 0)
+end
+
 
 function Transaction.tx_get_line(i, surface)
   ensure_defaults()
-  if i == 1 then return "# TX" end
-  if i == 2 then return "# id;ts;tick;ins;act;obj;item;cnt" end  -- qual removed from header (default)
+  tx_rb_ensure()
 
-  local ev = storage.tx_events and storage.tx_events[i - 2]
+  local ev = tx_rb_get_event(i)
   if not ev then return "" end
 
   local tick = tonumber(ev.tick) or 0
   local ts = Util.to_excel_datetime(tick, surface)
 
   local item_str = fmt_item_key(ev.item)
-  local cnt = tostring(ev.cnt or 0)
+
+  local kind = tostring(ev.kind or "?")
+  local raw = tonumber(ev.cnt) or 0
+  local cnt_num = math.abs(raw)
+  if kind == "TAKE" then cnt_num = -cnt_num end
+
   local qual = qual_name(ev.qual)
-  
+
   local base = string.format(
-    "%d;ts=%s;tick=%d;ins=%s;act=%s;obj=%s;item=%s;cnt=%s",
-    (i - 2),
+    "%d;ts=%s;tick=%d;ins=%s;act=%s;obj=%s;item=%s;cnt=%d",
+    tonumber(ev.id) or tonumber(i) or 0,
     ts,
     tick,
     tostring(ev.ins_id or "?"),
-    tostring(ev.kind or "?"),
+    kind,
     tostring(ev.obj or "?"),
     tostring(item_str or "?"),
-    cnt
+    cnt_num
   )
 
   -- Only include quality if it's not normal
@@ -776,103 +919,94 @@ function Transaction.tx_get_line(i, surface)
   return base
 end
 
--- -----------------------------------------
--- TX Viewer (GUI paging + refresh)
---   Mirrors Buffer module behavior, but uses tx_events.
--- -----------------------------------------
 
 local function tx_count()
-  return (storage.tx_events and #storage.tx_events) or 0
+  tx_rb_ensure()
+  return (storage.tx_size or 0)
 end
 
-local function tx_total_lines()
-  -- +2 header lines
-  return tx_count() + 2
-end
+local function tx_get_filters_from_ui(player)
+  -- No persistence: UI is the source of truth.
+  -- Defaults match UI defaults when the dialog opens.
+  local f = { inbound=true, outbound=true, transit=true, other=false }
 
-local function tx_get_line_len(i, surface)
-  local line = Transaction.tx_get_line(i, surface) or ""
-  return #line
-end
+  if not (player and player.valid) then return f end
+  local frame = player.gui.screen[Config.GUI_TX_FRAME]
+  if not (frame and frame.valid) then return f end
+  local top = frame["logsim_tx_toolbar"]
+  if not (top and top.valid) then return f end
 
-local function tx_get_text_range(start_line, end_line, surface)
-  local n = tx_total_lines()
-  if n <= 0 then return "" end
-
-  start_line = math.max(1, math.min(start_line, n))
-  end_line   = math.max(1, math.min(end_line, n))
-  if end_line < start_line then return "" end
-
-  local t = {}
-  for i = start_line, end_line do
-    t[#t+1] = Transaction.tx_get_line(i, surface)
+  local function read_chk(name, default)
+    local e = top[name]
+    if e and e.valid and e.type == "checkbox" then
+      return e.state == true
+    end
+    return default
   end
-  return table.concat(t, "\n") .. "\n"
+
+  f.inbound  = read_chk("logsim_tx_chk_inbound",  true)
+  f.outbound = read_chk("logsim_tx_chk_outbound", true)
+  f.transit  = read_chk("logsim_tx_chk_transit",  true)
+  f.other    = read_chk("logsim_tx_chk_other",    false)
+
+  return f
 end
 
-local function tx_compute_tail_window(max_chars, surface)
-  local n = tx_total_lines()
+local function tx_event_class(ev)
+  local obj = ev and ev.obj or nil
+  if obj == OBJ_RECV then return "inbound" end
+  if obj == OBJ_SHIP then return "outbound" end
+  if obj == OBJ_TRANSIT then return "transit" end
+  return "other"
+end
+
+-- Build exactly one visible window (TX_WINDOW_LINES) starting from a raw event index.
+-- We scan forward and only emit lines that pass the UI filters.
+-- Returns: text, effective_end_idx
+local function tx_get_text_window_filtered(player, start_idx, surface)
+  local n = tx_count()
+  if n == 0 then return "", 0 end
+
+  start_idx = math.max(1, math.min(start_idx or 1, n))
+
+  local flt = tx_get_filters_from_ui(player)
+  local lines = {}
+  local i = start_idx
+  local last_scanned = start_idx - 1
+
+  while i <= n and #lines < TX_WINDOW_LINES do
+    local ev = tx_rb_get_event(i)
+    if ev then
+      local cls = tx_event_class(ev)
+      if flt[cls] then
+        lines[#lines + 1] = Transaction.tx_get_line(i, surface)
+      end
+    end
+    last_scanned = i
+    i = i + 1
+  end
+
+  return table.concat(lines, "\n"), last_scanned
+end
+
+local function tx_tail_window()
+  local n = tx_count()
   if n == 0 then return 1, 0 end
-
-  local chars = 1
-  local start = n
-  while start > 1 do
-    local add = tx_get_line_len(start-1, surface) + 1
-    if chars + add > max_chars then break end
-    chars = chars + add
-    start = start - 1
-  end
-  return start, n
+  local e = n
+  local s = math.max(1, e - (TX_WINDOW_LINES - 1))
+  return s, e
 end
 
-local function tx_fit_window_to_chars(end_line, max_chars, surface)
-  local n = tx_total_lines()
-  if n == 0 then return 1, 0 end
-
-  end_line = math.max(1, math.min(end_line, n))
-
-  local chars = 1
-  local start = end_line
-  while start > 1 do
-    local add = tx_get_line_len(start-1, surface) + 1
-    if chars + add > max_chars then break end
-    chars = chars + add
-    start = start - 1
-  end
-
-  return start, end_line
-end
-
-local function tx_fit_window_forward_to_chars(start_line, end_limit, max_chars, surface)
-  local n = tx_total_lines()
-  if n == 0 then return 1, 0 end
-
-  start_line = math.max(1, math.min(start_line, n))
-  end_limit  = math.max(start_line, math.min(end_limit or n, n))
-
-  local chars = 1
-  local e = start_line
-  while e < end_limit and e < n do
-    local add = tx_get_line_len(e + 1, surface) + 1
-    if chars + add > max_chars then break end
-    chars = chars + add
-    e = e + 1
-  end
-
-  return start_line, e
-end
-
-function Transaction.tx_ensure_view(player_index, surface)
+function Transaction.tx_ensure_view(player_index)
   ensure_defaults()
   storage.tx_view = storage.tx_view or {}
 
   local view = storage.tx_view[player_index]
   if not view then
-    local s, e = tx_compute_tail_window(Config.TEXT_MAX or 1500000, surface)
+    local s, e = tx_tail_window()
     view = {
-      start_line = s,
-      end_line   = e,
-      follow     = true,
+      start_idx = s,
+      end_idx   = e,
       last_start = nil,
       last_end   = nil,
     }
@@ -912,35 +1046,27 @@ function Transaction.tx_refresh_for_player(player, force_text_redraw)
     return
   end
 
-  local toolbar = frame.logsim_tx_toolbar
-  if not (toolbar and toolbar.valid) then return end
-
   local surface = player.surface
-  local view = Transaction.tx_ensure_view(player.index, surface)
+  local view = Transaction.tx_ensure_view(player.index)
 
-  local prot_on = (storage.protocol_active == true)
-  if not prot_on then
-    view.follow = false
-  end
-
-  if view.follow then
-    local s, e = tx_compute_tail_window(Config.TEXT_MAX or 1500000, surface)
-    view.start_line, view.end_line = s, e
+  -- If view is uninitialized or drifted beyond range, snap to tail.
+  local n = tx_count()
+  if n == 0 then
+    view.start_idx, view.end_idx = 1, 0
+  else
+    if not view.end_idx or view.end_idx > n or not view.start_idx then
+      view.start_idx, view.end_idx = tx_tail_window()
+    end
   end
 
   local need_text =
     force_text_redraw
-    or view.follow
-    or view.last_start ~= view.start_line
-    or view.last_end   ~= view.end_line
+    or view.last_start ~= view.start_idx
+    or view.last_end   ~= view.end_idx
 
   if need_text then
-    local prefix = ""
-    if view.start_line > 1 then
-      prefix = "...(truncated)\n"
-    end
-
-    local text = prefix .. tx_get_text_range(view.start_line, view.end_line, surface)
+    local text, eff_end = tx_get_text_window_filtered(player, view.start_idx, surface)
+    view.end_idx = eff_end or view.end_idx
 
     local ok = pcall(function()
       if box and box.valid then
@@ -953,67 +1079,44 @@ function Transaction.tx_refresh_for_player(player, force_text_redraw)
       return
     end
 
-    view.last_start = view.start_line
-    view.last_end   = view.end_line
+    view.last_start = view.start_idx
+    view.last_end   = view.end_idx
   end
-
-  -- Update LIVE button style/state
-  local live = toolbar[Config.GUI_TX_BTN_TAIL]
-  if live and live.valid and live.type == "button" then
-    if not prot_on then
-      live.enabled = false
-      live.style = "button"
-      live.caption = {"logistics_simulation.tx_static"}
-      live.tooltip = {"logistics_simulation.tx_static_tooltip"}
-    else
-      live.enabled = true
-      if view.follow then
-        live.style = "confirm_button"
-        live.caption = {"logistics_simulation.tx_live"}
-        live.tooltip = {"logistics_simulation.tx_live_tooltip"}
-      else
-        live.style = "button"
-        live.caption = {"logistics_simulation.tx_live"}
-        live.tooltip = {"logistics_simulation.tx_paused_tooltip"}
-      end
-    end
-  end
-end
-
-function Transaction.tx_tick_refresh_open_guis(tick)
-  ensure_defaults()
-  tick = tick or game.tick
-
-  if (tick - (storage._tx_last_gui_refresh_tick or 0)) < (Config.GUI_REFRESH_TICKS or 10) then
-    return
-  end
-
-  local any = false
-  for _, v in pairs(storage.tx_gui_dirty or {}) do
-    if v then any = true; break end
-  end
-
-  if not any then
-    storage._tx_last_gui_refresh_tick = tick
-    return
-  end
-
-  for _, player in pairs(game.connected_players) do
-    if storage.tx_gui_dirty[player.index] then
-      Transaction.tx_refresh_for_player(player, false)
-      storage.tx_gui_dirty[player.index] = false
-    end
-  end
-
-  storage._tx_last_gui_refresh_tick = tick
 end
 
 -- Paging controls
+
+
+function Transaction.tx_home(player)
+  if not (player and player.valid) then return end
+  ensure_defaults()
+
+  local n = tx_count()
+  local view = Transaction.tx_ensure_view(player.index)
+
+  if n == 0 then
+    view.start_idx, view.end_idx = 1, 0
+  else
+    local s = 1
+    local e = math.min(n, TX_WINDOW_LINES)
+    view.start_idx, view.end_idx = s, e
+  end
+
+  Transaction.tx_refresh_for_player(player, true)
+end
+
+function Transaction.tx_end(player)
+  -- Alias: end == tail
+  Transaction.tx_tail(player)
+end
+
 function Transaction.tx_tail(player)
   if not (player and player.valid) then return end
   ensure_defaults()
-  local view = Transaction.tx_ensure_view(player.index, player.surface)
-  view.follow = true
+
+  local view = Transaction.tx_ensure_view(player.index)
+  view.start_idx, view.end_idx = tx_tail_window()
+
   Transaction.tx_refresh_for_player(player, true)
 end
 
@@ -1021,24 +1124,18 @@ function Transaction.tx_page_older(player)
   if not (player and player.valid) then return end
   ensure_defaults()
 
-  local n = tx_total_lines()
+  local n = tx_count()
   if n == 0 then
     Transaction.tx_refresh_for_player(player, true)
     return
   end
 
-  local view = Transaction.tx_ensure_view(player.index, player.surface)
-  view.follow = false
+  local view = Transaction.tx_ensure_view(player.index)
 
-  local win  = math.max(1, (view.end_line - view.start_line + 1))
-  local page = math.max(Config.BUFFER_PAGE_LINES or 200, win)
+  local new_end = math.max(1, (view.start_idx or 1) - 1)
+  local new_start = math.max(1, new_end - (TX_WINDOW_LINES - 1))
 
-  local new_end = math.max(1, view.start_line - 1)
-  local new_start = math.max(1, new_end - (page - 1))
-
-  new_start, new_end = tx_fit_window_to_chars(new_end, Config.TEXT_MAX or 1500000, player.surface)
-  view.start_line, view.end_line = new_start, new_end
-
+  view.start_idx, view.end_idx = new_start, new_end
   Transaction.tx_refresh_for_player(player, true)
 end
 
@@ -1046,24 +1143,18 @@ function Transaction.tx_page_newer(player)
   if not (player and player.valid) then return end
   ensure_defaults()
 
-  local n = tx_total_lines()
+  local n = tx_count()
   if n == 0 then
     Transaction.tx_refresh_for_player(player, true)
     return
   end
 
-  local view = Transaction.tx_ensure_view(player.index, player.surface)
-  view.follow = false
+  local view = Transaction.tx_ensure_view(player.index)
 
-  local win  = math.max(1, (view.end_line - view.start_line + 1))
-  local page = math.max(Config.BUFFER_PAGE_LINES or 200, win)
+  local new_start = math.min(n, (view.end_idx or 0) + 1)
+  local new_end = math.min(n, new_start + (TX_WINDOW_LINES - 1))
 
-  local new_start = math.min(n, view.end_line + 1)
-  local end_limit = math.min(n, new_start + (page - 1))
-
-  local s, e = tx_fit_window_forward_to_chars(new_start, end_limit, Config.TEXT_MAX or 1500000, player.surface)
-  view.start_line, view.end_line = s, e
-
+  view.start_idx, view.end_idx = new_start, new_end
   Transaction.tx_refresh_for_player(player, true)
 end
 
@@ -1090,6 +1181,12 @@ function Transaction.reset_tx_log()
   -- IMPORTANT: keep active inserter markings (green) and inserter IDs stable.
   storage.tx_events = {}
   storage.tx_virtual = { T00 = {}, SHIP = {}, RECV = {} }
+
+  -- Ringbuffer state reset (keep configured max, reset pointers + ids)
+  storage.tx_head = 1
+  storage.tx_write = 1
+  storage.tx_size = 0
+  storage.tx_seq = 0
 
   -- Force a rebuild of object map/watchlist after reset
   storage.tx_watch = {}
