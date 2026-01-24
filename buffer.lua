@@ -5,13 +5,14 @@
 --
 -- version 0.8.0 first complete working version
 -- version 0.8.1 ring buffer M.BUFFER_MAX_LINES load/save secure
+-- version 0.8.2 bug in gui-window if /prot off
 --
 -- =========================================
 
 local M = require("config")
 
 local Buffer = {}
-Buffer.version = "0.8.0"
+Buffer.version = "0.8.2"
 
 -- -----------------------------------------
 -- Defaults
@@ -238,18 +239,26 @@ function Buffer.fit_window_to_chars(end_line, max_chars)
   return start, end_line
 end
 
-function Buffer.fit_window_forward_to_chars(start_line, max_chars)
+function Buffer.fit_window_forward_to_chars(start_line, end_limit, max_chars)
   Buffer.ensure_defaults()
   buf_rb_ensure()
 
   local n = buf_rb_count()
   if n == 0 then return 1, 0 end
 
+  -- Backward compatibility: old signature (start_line, max_chars)
+  if max_chars == nil then
+    max_chars = end_limit
+    end_limit = nil
+  end
+
   start_line = math.max(1, math.min(start_line, n))
+  end_limit  = end_limit and math.max(start_line, math.min(end_limit, n)) or n
+  max_chars  = tonumber(max_chars) or M.TEXT_MAX
 
   local chars = 1
   local e = start_line
-  while e < n do
+  while e < end_limit do
     local nxt = buf_rb_get_line(e + 1) or ""
     local add = #nxt + 1
     if chars + add > max_chars then break end

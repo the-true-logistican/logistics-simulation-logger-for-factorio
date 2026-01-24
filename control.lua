@@ -17,10 +17,11 @@
 -- Version 0.6.1 locale de/en; debugging
 -- Version 0.6.2 export to file csv/json
 -- Version 0.6.3 stabilising of the mod
--- Version 0.7.x transaction based on inserter action
+-- Version 0.7.x transaction based on inserter action 
 -- version 0.8.0 first complete working version
 --               complete accounting with export
 -- version 0.8.1 tx window with buttons <<  <  >  >> 
+-- Version 0.8.2 get global parameters from settings
 -- =========================================
 
 local DEBUG = true
@@ -213,6 +214,29 @@ cleanup_entity_from_registries = function(unit_number, log_fn)
   return removed_any
 end
 
+local function on_runtime_mod_setting_changed(event)
+  if not (event and event.setting_type == "runtime-global") then return end
+  if not storage then return end
+
+  local s = event.setting
+  if s ~= "logsim_sample_interval_ticks"
+     and s ~= "logsim_buffer_max_lines"
+     and s ~= "logsim_tx_max_events" then
+    return
+  end
+
+  -- Re-read settings into storage (with fallback to config.lua)
+  M.ensure_storage_defaults(storage)
+
+  -- Force ringbuffer systems to react immediately
+  if Buffer and Buffer.ensure_defaults then
+    Buffer.ensure_defaults()
+  end
+  if Transaction and Transaction.ensure_defaults then
+    Transaction.ensure_defaults()
+  end
+end
+
 -- -----------------------------------------
 -- Lifecycle Events
 -- -----------------------------------------
@@ -254,6 +278,8 @@ script.on_load(function()
   _needs_marker_refresh_after_load = true
 end)
 
+script.on_event(defines.events.on_runtime_mod_setting_changed, on_runtime_mod_setting_changed)
+
 -- -----------------------------------------
 -- Commands
 -- -----------------------------------------
@@ -261,11 +287,13 @@ end)
 commands.add_command("gp", "Global Power Network: /gp on | /gp off", function(event)
   local player = game.players[event.player_index]
   local arg = event.parameter
-  
+
   if arg == "on" then
+    storage.gp_enabled = true
     player.surface.create_global_electric_network()
     player.print({"logistics_simulation.cmd_gp_on"})
   elseif arg == "off" then
+    storage.gp_enabled = false
     player.surface.destroy_global_electric_network()
     player.print({"logistics_simulation.cmd_gp_off"})
   else
@@ -443,9 +471,11 @@ end
 script.on_event(defines.events.on_tick, function(event)
   -- Transactions (in-memory): observe inserter movements every tick
   if Transaction and Transaction.on_tick then
-    Transaction.on_tick(event.tick)
+    if storage.protocol_active then
+      Transaction.on_tick(event.tick)
+    end
   end
-  
+
   if _needs_marker_refresh_after_load then
     if Chests and Chests.refresh_all_markers then
       Chests.refresh_all_markers()

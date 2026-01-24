@@ -26,6 +26,7 @@
 --               number of items in transactipons from/to belts corrected
 --               simple filter for transactions with checkboxes
 --               ring buffer M.TX_MAX_EVENTS load/save secure
+-- Version 0.8.2 get global parameters from settings
 --
 -- =========================================
 
@@ -47,16 +48,16 @@ local tx_rb_resize
 local function ensure_defaults()
   Config.ensure_storage_defaults(storage)
 
-  -- Keep TX ringbuffer settings in sync with config.lua across save/load.
-  -- Otherwise old values from the save will "stick" forever.
+  -- Keep TX ringbuffer settings in sync with config/settings across save/load.
   tx_rb_ensure()
 
   local desired_max =
-    (Config.TX_MAX_EVENTS)
-    or (Config.M and Config.M.TX_MAX_EVENTS)
+    tonumber(storage.tx_max_events)
+    or tonumber(Config.TX_MAX_EVENTS)
+    or (Config.M and tonumber(Config.M.TX_MAX_EVENTS))
     or 500000
 
-  if storage.tx_max_events ~= desired_max then
+  if tonumber(storage.tx_max_events) ~= desired_max then
     tx_rb_resize(desired_max)
   end
 end

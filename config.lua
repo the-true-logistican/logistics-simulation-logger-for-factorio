@@ -6,6 +6,7 @@
 -- version 0.8.1 tx window with buttons <<  <  >  >> 
 --               ring buffer M.TX_MAX_EVENTS load/save secure
 --               ring buffer M.BUFFER_MAX_LINES load/save secure
+-- Version 0.8.2 get global parameters from settings
 --
 -- =========================================
 
@@ -17,15 +18,20 @@ M.version = "0.8.1"
 -- Technical Configuration
 -- =====================================
 
-M.SAMPLE_INTERVAL_TICKS = 173 -- (60fps) this is 10min in ISO-Time (exact 173,6)
+-- Begin Parameters from Setup
+
 -- ticks_per_day (z.B. 25 000) → Spielzeit / Tageslänge
 -- 1 ISO-Minute = 1/1440 of one Factorio-Day
+M.SAMPLE_INTERVAL_TICKS = 173 -- (60fps) this is 10min in ISO-Time (exact 173,6)
+M.BUFFER_MAX_LINES = 5000    -- max number of complete inventory
+M.TX_MAX_EVENTS = 50000     -- max number of transaction records kept in memory
+
+-- End Parameters from Setup
+
 M.POWER_SAMPLES = 5           -- ~1.0s (5 * 0.2s)  
 M.POLLUTION_SAMPLES = 5       -- ~1.0s (5 * 0.2s)
 M.GUI_REFRESH_TICKS = 10      -- throttle GUI refresh (ticks)
-M.BUFFER_MAX_LINES = 5000    -- max number of complete inventory
 M.TEXT_MAX = 1500000
-M.TX_MAX_EVENTS = 50000     -- max number of transaction records kept in memory
 M.CHUNK_SIZE = 32 
 M.MAX_TELEGRAM_LENGTH = 2000
 M.BUFFER_PAGE_LINES = 200
@@ -34,7 +40,7 @@ M.COLLECT_DEPENDENC_DEPTH = 30 -- limit of depth for recursion
 -- Transaction watch markers (rendering)
 M.TX_MARK_INSERTERS = true
 M.TX_MARK_COLOR = { r = 1, g = 1, b = 0 }   -- yellow
-M.TX_MARK_ACTIVE_COLOR = { r=0, g=1, b=0, a=1 } -- green
+M.TX_MARK_ACTIVE_COLOR = { r=1, g=0, b=1, a=1 } -- 
 M.TX_MARK_SCALE = 1.0
 M.TX_MARK_OFFSET = { x = 0, y = -0.3 }     
 
@@ -224,16 +230,21 @@ M.ITEM_ALIASES = {
 -- =====================================
 
 local function apply_sample_interval_from_config()
-  -- Config value
-  local cfg = M.SAMPLE_INTERVAL_TICKS
+  -- Source of truth: Mod settings (runtime-global). Fallback: config.lua constant.
+  local cfg = nil
+  if settings and settings.global and settings.global["logsim_sample_interval_ticks"] then
+    cfg = settings.global["logsim_sample_interval_ticks"].value
+  end
+  if cfg == nil then
+    cfg = M.SAMPLE_INTERVAL_TICKS
+  end
 
-  -- Validate config
+  -- Validate
   if type(cfg) ~= "number" or cfg < 1 then
     -- hard warning, but KEEP old stored value so the mod continues
-    log(string.format("[LogSim][ERROR] Invalid config SAMPLE_INTERVAL_TICKS=%s. Keeping stored sample_interval=%s",
+    log(string.format("[LogSim][ERROR] Invalid SAMPLE_INTERVAL_TICKS=%s. Keeping stored sample_interval=%s",
       tostring(cfg), tostring(storage.sample_interval)))
 
-    -- Optional: tell players in-game once (safe + visible)
     for _, p in pairs(game.players) do
       if p and p.valid then
         p.print({"", "[LogSim] ERROR: SAMPLE_INTERVAL_TICKS invalid (", tostring(cfg),
@@ -243,23 +254,25 @@ local function apply_sample_interval_from_config()
     return
   end
 
-  -- Config is valid -> ALWAYS apply (this is what you want)
+  -- ALWAYS apply
   storage.sample_interval = cfg
 end
 
-
-
 local function apply_tx_max_events_from_config()
-  -- Config value
-  local cfg = M.TX_MAX_EVENTS
+  -- Source of truth: Mod settings (runtime-global). Fallback: config.lua constant.
+  local cfg = nil
+  if settings and settings.global and settings.global["logsim_tx_max_events"] then
+    cfg = settings.global["logsim_tx_max_events"].value
+  end
+  if cfg == nil then
+    cfg = M.TX_MAX_EVENTS
+  end
 
-  -- Validate config
+  -- Validate
   if type(cfg) ~= "number" or cfg < 1 then
-    -- hard warning, but KEEP old stored value so the mod continues
-    log(string.format("[LogSim][ERROR] Invalid config TX_MAX_EVENTS=%s. Keeping stored tx_max_events=%s",
+    log(string.format("[LogSim][ERROR] Invalid TX_MAX_EVENTS=%s. Keeping stored tx_max_events=%s",
       tostring(cfg), tostring(storage.tx_max_events)))
 
-    -- Optional: tell players in-game once (safe + visible)
     for _, p in pairs(game.players) do
       if p and p.valid then
         p.print({"", "[LogSim] ERROR: TX_MAX_EVENTS invalid (", tostring(cfg),
@@ -269,19 +282,23 @@ local function apply_tx_max_events_from_config()
     return
   end
 
-  -- Config is valid -> ALWAYS apply (this is what you want)
+  -- ALWAYS apply (tx ringbuffer reacts if changed)
   storage.tx_max_events = cfg
 end
 
-
-
 local function apply_buffer_max_lines_from_config()
-  -- Config value
-  local cfg = M.BUFFER_MAX_LINES
+  -- Source of truth: Mod settings (runtime-global). Fallback: config.lua constant.
+  local cfg = nil
+  if settings and settings.global and settings.global["logsim_buffer_max_lines"] then
+    cfg = settings.global["logsim_buffer_max_lines"].value
+  end
+  if cfg == nil then
+    cfg = M.BUFFER_MAX_LINES
+  end
 
-  -- Validate config
+  -- Validate
   if type(cfg) ~= "number" or cfg < 1 then
-    log(string.format("[LogSim][ERROR] Invalid config BUFFER_MAX_LINES=%s. Keeping stored buffer_max_lines=%s",
+    log(string.format("[LogSim][ERROR] Invalid BUFFER_MAX_LINES=%s. Keeping stored buffer_max_lines=%s",
       tostring(cfg), tostring(storage.buffer_max_lines)))
 
     for _, p in pairs(game.players) do
@@ -293,28 +310,29 @@ local function apply_buffer_max_lines_from_config()
     return
   end
 
-  -- Config is valid -> ALWAYS apply (buffer.lua reacts if changed)
+  -- ALWAYS apply (buffer ringbuffer reacts if changed)
   storage.buffer_max_lines = cfg
 end
 
-
 function M.ensure_storage_defaults(st)
-  -- allow explicit table (tests), default: global storage
   st = st or storage
   if not st then
     st = {}
     storage = st
   end
 
-  -- Always re-apply config value (unless config invalid)
+  -- Always re-apply the 3 numeric settings (true config knobs)
   apply_sample_interval_from_config()
+  apply_buffer_max_lines_from_config()
+  apply_tx_max_events_from_config()
 
   -- -------- core run / protocol --------
   st.run_name = st.run_name or nil
   st.run_start_tick = st.run_start_tick or nil
 
-  if st.protocol_active == nil then st.protocol_active = false end
-  if st.info_mode == nil then st.info_mode = false end
+  -- gp_initialized is no longer needed for "default once" behavior, but we keep it
+  -- as a migration-safe flag in case other code still references it.
+  if st.gp_initialized == nil then st.gp_initialized = true end
 
   -- -------- buffer --------
   st.buffer_lines     = st.buffer_lines or {}
@@ -323,52 +341,29 @@ function M.ensure_storage_defaults(st)
   -- Buffer ring state (migration-safe)
   if st.buffer_head == nil then st.buffer_head = 1 end
   if st.buffer_size == nil then st.buffer_size = #st.buffer_lines end
-  -- stored max (driven by config)
-  if st.buffer_max_lines == nil then st.buffer_max_lines = (M.BUFFER_MAX_LINES or 500000) end
 
--- -------- tx viewer --------
-st.tx_view          = st.tx_view or {}
-st.tx_gui_dirty     = st.tx_gui_dirty or {}
-st._tx_last_gui_refresh_tick = st._tx_last_gui_refresh_tick or 0
-  st.gui_dirty        = st.gui_dirty or {}
-  st.perline_counter  = st.perline_counter or 0
-  st._buf_last_gui_refresh_tick = st._buf_last_gui_refresh_tick or 0
-
-  -- -------- registries --------
+  -- -------- registry --------
   st.registry = st.registry or {}
-  st.next_chest_id = st.next_chest_id or 1
-  st.next_tank_id  = st.next_tank_id  or 1
-
-  st.machines = st.machines or {}
-  st.next_machine_id = st.next_machine_id or 1
-
+  st.registry_last_id = st.registry_last_id or 0
   st.protected = st.protected or {}
-  st.next_protect_id = st.next_protect_id or 1
 
-  st.marker_dirty = st.marker_dirty or false
-  st._needs_rendering_cleanup = st._needs_rendering_cleanup or false
+  -- -------- export counters / filenames --------
+  st.export_counter = st.export_counter or 0
+  st.export_counter_tx = st.export_counter_tx or 0
+  st.export_counter_inv = st.export_counter_inv or 0
 
-  -- -------- transactions (in-memory) --------
-  st.tx_active = (st.tx_active ~= false) -- default true unless explicitly disabled
-
-  st.tx_obj_by_unit       = st.tx_obj_by_unit or {}
-  st.tx_inserter_by_unit  = st.tx_inserter_by_unit or {}
-  st.tx_next_inserter_id  = st.tx_next_inserter_id or 1
-
-  st.tx_watch      = st.tx_watch or {}
-  st.tx_watch_meta = st.tx_watch_meta or {}
+  -- -------- tx system --------
+  st.tx_events = st.tx_events or {}
+  st.tx_watch = st.tx_watch or {}
   st.tx_active_inserters = st.tx_active_inserters or {}
+  st.tx_object_map = st.tx_object_map or {}
 
-  st.tx_events     = st.tx_events or {}
-  st.tx_max_events = st.tx_max_events or (M.TX_MAX_EVENTS or 500000)
+  -- TX ringbuffer state (migration-safe)
+  st.tx_head = st.tx_head or 1
+  st.tx_size = st.tx_size or #st.tx_events
+  st.tx_next_id = st.tx_next_id or (#st.tx_events + 1)
 
-  st.tx_rebuild_interval  = st.tx_rebuild_interval  or 60
-  st.tx_last_rebuild_tick = st.tx_last_rebuild_tick or 0
-
-  -- optional debug info
-  if st.tx_dbg_watch == nil then st.tx_dbg_watch = nil end
-
-  -- rendering marks
+  -- Rendering ids
   st.tx_mark_render_ids = st.tx_mark_render_ids or {}
 
   -- virtual buffers derived from TX postings (running balances)
@@ -376,10 +371,11 @@ st._tx_last_gui_refresh_tick = st._tx_last_gui_refresh_tick or 0
     T00  = {},
     SHIP = {},
     RECV = {},
-}
+  }
 
   return st
 end
+
 
 
 return M
