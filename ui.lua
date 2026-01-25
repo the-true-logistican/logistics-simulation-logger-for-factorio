@@ -757,6 +757,13 @@ function UI.show_tx_gui(player)
   }
   top.add{
     type = "checkbox",
+    name = "logsim_tx_chk_wip",
+    state = true,
+    caption = {"logistics_simulation.tx_filter_wip"},
+    tooltip = {"logistics_simulation.tx_filter_wip_tooltip"}
+  }
+  top.add{
+    type = "checkbox",
     name = "logsim_tx_chk_other",
     state = false,
     caption = {"logistics_simulation.tx_filter_other"},

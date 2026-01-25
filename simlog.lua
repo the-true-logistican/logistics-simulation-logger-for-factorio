@@ -2,6 +2,9 @@
 -- LogSim (Factorio 2.0) 
 -- Logging & Trace Module for Logistics Simulation
 -- Builds protocol log strings from live factory state (power, pollution, machines, inventories).
+--
+-- Version 0.8.1 introduce WIP (work in progress)
+--
 -- =========================================
 
 local M = require("config")
@@ -12,7 +15,7 @@ local Chests = require("chests")
 local Util = require("utility")
 
 local SimLog = {}
-SimLog.version = "0.8.0"
+SimLog.version = "0.8.1"
 
 SimLog.MACHINE_STATE = {
   RUN       = "RUN",
@@ -220,6 +223,7 @@ function SimLog.append_virtual_buffers(parts)
   local v = storage.tx_virtual
 
   -- fixed order
+  local s4 = SimLog.encode_virtual("WIP",  v.WIP)   -- NEU
   local s3 = SimLog.encode_virtual("RECV", v.RECV)
   local s1 = SimLog.encode_virtual("T00",  v.T00)
   local s2 = SimLog.encode_virtual("SHIP", v.SHIP)
@@ -227,6 +231,7 @@ function SimLog.append_virtual_buffers(parts)
   if s1 then parts[#parts+1] = s1 end
   if s2 then parts[#parts+1] = s2 end
   if s3 then parts[#parts+1] = s3 end
+  if s4 then parts[#parts+1] = s4 end              -- NEU
 end
 
 function SimLog.build_string_for_surface(list, surface_index, resolve_fn, encode_fn)

@@ -8,6 +8,10 @@
 -- - Time value (crafting time chain)
 -- - Energy cost (time × machine power)
 -- - fixed assets, unit costs and dependency closures for items and blueprints.
+--
+-- version 0.8.0 first complete working version
+-- version 0.8.1 debug clear.cache eviction
+--
 -- =========================================
 
 local ItemCost = {}
@@ -448,10 +452,10 @@ function ItemCost.calculate_blueprint_cost(item_counts, force)
 end
 
 function ItemCost.clear_cache()
+  local old_size = #cache_access_order
   cost_cache = {}
   cache_access_order = {}
-  cache_stats.evictions = cache_stats.evictions + #cache_access_order
-  
+  cache_stats.evictions = cache_stats.evictions + old_size
 end
 
 -- Format detailed per-item breakdown as semicolon table

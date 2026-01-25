@@ -7,12 +7,13 @@
 --               ring buffer M.TX_MAX_EVENTS load/save secure
 --               ring buffer M.BUFFER_MAX_LINES load/save secure
 -- Version 0.8.2 get global parameters from settings
+-- Version 0.8.3 introduce WIP (work in progress)
 --
 -- =========================================
 
 local M = {}
 
-M.version = "0.8.1"
+M.version = "0.8.3"
 
 -- =====================================
 -- Technical Configuration
@@ -39,8 +40,9 @@ M.COLLECT_DEPENDENC_DEPTH = 30 -- limit of depth for recursion
 
 -- Transaction watch markers (rendering)
 M.TX_MARK_INSERTERS = true
-M.TX_MARK_COLOR = { r = 1, g = 1, b = 0 }   -- yellow
-M.TX_MARK_ACTIVE_COLOR = { r=1, g=0, b=1, a=1 } -- 
+M.TX_MARK_COLOR = { r = 1, g = 1, b = 0 }       -- yellow
+M.TX_MARK_ACTIVE_COLOR = { r=1, g=0, b=1, a=1 } -- pink
+M.TX_MARK_WIP_COLOR = { r=0, g=1, b=0, a=1 }    -- green
 M.TX_MARK_SCALE = 1.0
 M.TX_MARK_OFFSET = { x = 0, y = -0.3 }     
 
@@ -356,8 +358,9 @@ function M.ensure_storage_defaults(st)
   st.tx_events = st.tx_events or {}
   st.tx_watch = st.tx_watch or {}
   st.tx_active_inserters = st.tx_active_inserters or {}
+  storage.tx_wip_inserters = storage.tx_wip_inserters or {}
   st.tx_object_map = st.tx_object_map or {}
-
+  
   -- TX ringbuffer state (migration-safe)
   st.tx_head = st.tx_head or 1
   st.tx_size = st.tx_size or #st.tx_events
@@ -368,9 +371,10 @@ function M.ensure_storage_defaults(st)
 
   -- virtual buffers derived from TX postings (running balances)
   st.tx_virtual = st.tx_virtual or {
-    T00  = {},
-    SHIP = {},
-    RECV = {},
+    T00  = {}, -- transition
+    SHIP = {}, -- shipmewnt
+    RECV = {}, -- reveive
+    WIP  = {}, -- work in progress
   }
 
   return st

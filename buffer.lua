@@ -362,11 +362,8 @@ function Buffer.refresh_for_player(player, force_text_redraw)
     or view.last_end   ~= view.end_line
 
   if need_text then
-    -- LOCALIZED: Use locale key for truncation prefix
-    local prefix_msg = player.locale and {"logistics_simulation.buffer_static_prefix"} or "...(truncated)\n"
    
 local prefix = ""
-
 -- Note: text-box content must be a plain string; LocalisedString needs async translation.
 -- Keep a simple prefix to avoid LuaPlayer.localised_string (not an API field).
 if view.start_line > 1 then
@@ -374,8 +371,6 @@ if view.start_line > 1 then
 end
 
 local text = prefix .. Buffer.get_text_range(view.start_line, view.end_line)
-
-    local text = prefix .. Buffer.get_text_range(view.start_line, view.end_line)
 
     local ok = pcall(function()
       if box and box.valid then

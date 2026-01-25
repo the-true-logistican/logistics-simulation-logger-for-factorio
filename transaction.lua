@@ -10,6 +10,7 @@
 --     3) OBJ_TRANSIT = "T00"
 --     4) OBJ_SHIP    = "SHIP"
 --     5) OBJ_RECV    = "RECV"
+--     6) OBJ_WIP     = "WIP"   (NEW)
 --
 -- Rules (Martin):
 --   - Full inventory snapshots remain as anchors (handled elsewhere)
@@ -27,6 +28,7 @@
 --               simple filter for transactions with checkboxes
 --               ring buffer M.TX_MAX_EVENTS load/save secure
 -- Version 0.8.2 get global parameters from settings
+-- Version 0.8.3 WIP virtual account + Shift-R toggle normal/WIP/OFF (minimal additions)
 --
 -- =========================================
 
@@ -35,7 +37,7 @@ local UI = require("ui")
 local Util = require("utility")  -- fly() lives here
 
 local Transaction = {}
-Transaction.version = "0.8.1"
+Transaction.version = "0.8.3"
 
 -- forward declarations (needed because ensure_defaults() uses them)
 local tx_rb_ensure
@@ -47,6 +49,13 @@ local tx_rb_resize
 
 local function ensure_defaults()
   Config.ensure_storage_defaults(storage)
+
+  -- NEW: keep WIP flag map (minimal, no structural change to existing ones)
+  storage.tx_wip_inserters = storage.tx_wip_inserters or {}
+
+  -- NEW: ensure virtual account exists (migration safe even if config.lua not updated yet)
+  storage.tx_virtual = storage.tx_virtual or { T00 = {}, SHIP = {}, RECV = {} }
+  storage.tx_virtual.WIP = storage.tx_virtual.WIP or {}
 
   -- Keep TX ringbuffer settings in sync with config/settings across save/load.
   tx_rb_ensure()
@@ -82,21 +91,41 @@ function Transaction.handle_register_hotkey(player, ent)
     return true
   end
 
-  local ok, reason = Transaction.set_inserter_active(ent.unit_number, true)
+  local unit = ent.unit_number
+  local is_active = Transaction.is_inserter_active and Transaction.is_inserter_active(unit)
+  local is_wip = storage.tx_wip_inserters and storage.tx_wip_inserters[unit] == true
 
-  if ok then
-    Util.fly(player, ent, {"logistics_simulation.tx_inserter_marked_active"})
-  else
-    if reason == "not_watched" then
-      Util.fly(player, ent, {"logistics_simulation.tx_inserter_not_watched"})
-    elseif reason == "not_boundary" then
-      Util.fly(player, ent, {"logistics_simulation.tx_inserter_not_boundary"})
+  -- Cycle (Boundary-only enforced by set_inserter_active):
+  -- OFF -> ACTIVE(normal) -> ACTIVE(WIP) -> OFF
+  if not is_active then
+    local ok, reason = Transaction.set_inserter_active(unit, true)
+    if ok then
+      storage.tx_wip_inserters[unit] = nil
+      Util.fly(player, ent, {"logistics_simulation.tx_inserter_marked_active"})
     else
-      Util.fly(player, ent, {"logistics_simulation.tx_inserter_mark_failed"})
+      if reason == "not_watched" then
+        Util.fly(player, ent, {"logistics_simulation.tx_inserter_not_watched"})
+      elseif reason == "not_boundary" then
+        Util.fly(player, ent, {"logistics_simulation.tx_inserter_not_boundary"})
+      else
+        Util.fly(player, ent, {"logistics_simulation.tx_inserter_mark_failed"})
+      end
     end
+    return true
   end
 
-  return true
+  if not is_wip then
+    storage.tx_wip_inserters[unit] = true
+    Transaction.update_marks()
+    Util.fly(player, ent, {"logistics_simulation.tx_inserter_marked_WIP"})
+    return true
+  else	
+    storage.tx_wip_inserters[unit] = false
+    Transaction.update_marks()
+    Util.fly(player, ent, {"logistics_simulation.tx_inserter_marked_active"})
+    return true
+  end
+
 end
 
 -- -----------------------------------------
@@ -134,6 +163,12 @@ function Transaction.set_inserter_active(ins_unit, is_active)
 
   -- deactivate
   storage.tx_active_inserters[ins_unit] = nil
+
+  -- NEW: WIP flag should not survive when deactivated
+  if storage.tx_wip_inserters then
+    storage.tx_wip_inserters[ins_unit] = nil
+  end
+
   Transaction.update_marks()
   return true
 end
@@ -378,8 +413,8 @@ local function push_event(ev)
 
   t[w] = ev
 
-  -- update running balances for virtual buffers (T00/SHIP/RECV)
-  if ev and (ev.obj == "T00" or ev.obj == "SHIP" or ev.obj == "RECV") then
+  -- update running balances for virtual buffers (T00/SHIP/RECV/WIP)
+  if ev and (ev.obj == "T00" or ev.obj == "SHIP" or ev.obj == "RECV" or ev.obj == "WIP") then
     local cnt = tonumber(ev.cnt) or 0
     if cnt ~= 0 then
       if ev.kind == "GIVE" then
@@ -408,7 +443,7 @@ local function push_event(ev)
 end
 
 local function safe_get(field_fn)
-local ok, v = pcall(field_fn)
+  local ok, v = pcall(field_fn)
   if ok then return v end
   return nil
 end
@@ -470,16 +505,23 @@ end
 --   T00  : Transit (belts / uncontrolled flow)
 --   SHIP : Shipping (outbound)  [active boundary inserter]
 --   RECV : Receiving (inbound)  [active boundary inserter]
+--   WIP  : Work in progress     [active boundary inserter in WIP mode]
 -- -----------------------------------------
 
 local OBJ_TRANSIT = "T00"
 local OBJ_SHIP    = "SHIP"
 local OBJ_RECV    = "RECV"
+local OBJ_WIP     = "WIP"
 
 local function opposite_obj(ins_unit, src_obj, dst_obj)
   local is_active = Transaction.is_inserter_active and Transaction.is_inserter_active(ins_unit)
 
   if is_active then
+    -- NEW: WIP mode overrides interface postings (still boundary)
+    if storage.tx_wip_inserters and storage.tx_wip_inserters[ins_unit] == true then
+      return OBJ_WIP
+    end
+
     -- Prefer cached boundary direction (robust against transient target resolution)
     local meta = storage.tx_watch_meta and storage.tx_watch_meta[ins_unit]
     local b = meta and meta.boundary or nil
@@ -533,11 +575,6 @@ function Transaction.is_boundary_inserter(ins_unit)
   local pick, drop = get_targets(ins)
   local src_obj = obj_id_for_entity(pick)
   local dst_obj = obj_id_for_entity(drop)
-  
-  local boundary = nil
-  if src_obj and (not dst_obj) then boundary = "ship"
-  elseif (not src_obj) and dst_obj then boundary = "recv"
-  end  
 
   -- XOR: exactly one side registered
   if (src_obj and not dst_obj) or (not src_obj and dst_obj) then
@@ -598,8 +635,15 @@ function Transaction.update_marks()
     if not (ins and ins.valid) then
       UI.marker_text_update(rec, nil, "", nil)
     else
-      local col = active[ins_unit] and ACTIVE_COLOR or Config.TX_MARK_COLOR
-
+      local WIP_COLOR = Config.TX_MARK_WIP_COLOR or { r=0, g=1, b=0, a=1 }
+      local col = Config.TX_MARK_COLOR
+      if active[ins_unit] then
+        if storage.tx_wip_inserters and storage.tx_wip_inserters[ins_unit] == true then
+          col = WIP_COLOR
+        else
+          col = ACTIVE_COLOR
+        end
+      end
       UI.marker_text_update(rec, ins, rec.id, {
         color  = col,
         offset = Config.TX_MARK_OFFSET,
@@ -672,6 +716,12 @@ function Transaction.rebuild_watchlist()
       m.misses = 0
       m.boundary = boundary
       storage.tx_watch_meta[ins.unit_number] = m
+    else
+      -- update boundary cache if already watched
+      local m = storage.tx_watch_meta[ins.unit_number]
+      if m then
+        m.boundary = boundary
+      end
     end
 
     return true
@@ -730,6 +780,26 @@ function Transaction.rebuild_watchlist()
       if watch[ins_unit] then
         if not Transaction.is_boundary_inserter(ins_unit) then
           storage.tx_active_inserters[ins_unit] = nil
+        end
+      end
+    end
+  end
+
+  -- NEW HARD RULE #3: WIP must not survive if no longer watched
+  if storage.tx_wip_inserters then
+    for ins_unit, _ in pairs(storage.tx_wip_inserters) do
+      if not watch[ins_unit] then
+        storage.tx_wip_inserters[ins_unit] = nil
+      end
+    end
+  end
+
+  -- NEW HARD RULE #4: WIP must not survive if no longer boundary
+  if storage.tx_wip_inserters then
+    for ins_unit, _ in pairs(storage.tx_wip_inserters) do
+      if watch[ins_unit] then
+        if not Transaction.is_boundary_inserter(ins_unit) then
+          storage.tx_wip_inserters[ins_unit] = nil
         end
       end
     end
@@ -848,6 +918,11 @@ function Transaction.on_tick(tick)
         if storage.tx_active_inserters then
           storage.tx_active_inserters[ins_unit] = nil
         end
+
+        -- NEW: clear WIP flag too
+        if storage.tx_wip_inserters then
+          storage.tx_wip_inserters[ins_unit] = nil
+        end
       end
     end
   end
@@ -879,7 +954,6 @@ function Transaction.tx_count()
   tx_rb_ensure()
   return (storage.tx_size or 0)
 end
-
 
 function Transaction.tx_get_line(i, surface)
   ensure_defaults()
@@ -920,7 +994,6 @@ function Transaction.tx_get_line(i, surface)
   return base
 end
 
-
 local function tx_count()
   tx_rb_ensure()
   return (storage.tx_size or 0)
@@ -929,7 +1002,7 @@ end
 local function tx_get_filters_from_ui(player)
   -- No persistence: UI is the source of truth.
   -- Defaults match UI defaults when the dialog opens.
-  local f = { inbound=true, outbound=true, transit=true, other=false }
+  local f = { inbound=true, outbound=true, transit=true, wip=true, other=false }
 
   if not (player and player.valid) then return f end
   local frame = player.gui.screen[Config.GUI_TX_FRAME]
@@ -948,6 +1021,7 @@ local function tx_get_filters_from_ui(player)
   f.inbound  = read_chk("logsim_tx_chk_inbound",  true)
   f.outbound = read_chk("logsim_tx_chk_outbound", true)
   f.transit  = read_chk("logsim_tx_chk_transit",  true)
+  f.wip      = read_chk("logsim_tx_chk_wip",      true)
   f.other    = read_chk("logsim_tx_chk_other",    false)
 
   return f
@@ -958,6 +1032,7 @@ local function tx_event_class(ev)
   if obj == OBJ_RECV then return "inbound" end
   if obj == OBJ_SHIP then return "outbound" end
   if obj == OBJ_TRANSIT then return "transit" end
+  if obj == OBJ_WIP then return "wip" end
   return "other"
 end
 
@@ -1087,7 +1162,6 @@ end
 
 -- Paging controls
 
-
 function Transaction.tx_home(player)
   if not (player and player.valid) then return end
   ensure_defaults()
@@ -1174,14 +1248,16 @@ function Transaction.tx_copy_to_clipboard(player)
   player.print({"logistics_simulation.msg_copied"})
 end
 
-
 function Transaction.reset_tx_log()
   ensure_defaults()
 
   -- Clear only the TX event log + viewer state.
   -- IMPORTANT: keep active inserter markings (green) and inserter IDs stable.
   storage.tx_events = {}
-  storage.tx_virtual = { T00 = {}, SHIP = {}, RECV = {} }
+  storage.tx_virtual = { T00 = {}, SHIP = {}, RECV = {}, WIP = {} }
+
+  -- NEW: clear WIP mode flags
+  storage.tx_wip_inserters = {}
 
   -- Ringbuffer state reset (keep configured max, reset pointers + ids)
   storage.tx_head = 1
@@ -1196,7 +1272,7 @@ function Transaction.reset_tx_log()
 
   storage.tx_dbg_watch = nil
   storage.tx_last_rebuild_tick = 0
-  
+
   -- Viewer state
   storage.tx_view = {}
   storage.tx_gui_dirty = {}

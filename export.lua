@@ -5,6 +5,7 @@
 -- version 0.8.0 first complete working version
 -- version 0.8.1 ring buffer M.TX_MAX_EVENTS load/save secure
 --               ring buffer M.BUFFER_MAX_LINES load/save secure
+-- version 0.8.2 minog bugs in line counting
 --
 -- =========================================
 
@@ -15,7 +16,7 @@ local Transaction = require("transaction")
 local Util = require("utility")
 
 local Export = {}
-Export.version = "0.8.0"
+Export.version = "0.8.2"
 
 -- Build a JSON-friendly TX array containing ONLY the used portion.
 -- Order is not guaranteed/required (Martin), but we still export in logical (oldest->newest) order for convenience.
@@ -76,7 +77,7 @@ function Export.export_tx_csv(player)
   local surface = player.surface
 
   -- Build exactly the same lines as the TX viewer
-  local total_lines = tx_n + 2
+  local total_lines = tx_n
   local lines = {}
 
   for i = 1, total_lines do
@@ -93,7 +94,7 @@ function Export.export_tx_csv(player)
   end)
 
   if ok then
-    player.print({"logistics_simulation.export_success", filepath, line_count})
+    player.print({"logistics_simulation.export_success", filepath, tx_n})
   else
     player.print({"logistics_simulation.export_failed", tostring(err)})
   end

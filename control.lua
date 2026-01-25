@@ -637,13 +637,6 @@ script.on_event(
 -- -----------------------------------------
 -- GUI Click Handlers 
 
-
-local function click_tx_open(event)
-  local player = game.players[event.player_index]
-  if not (player and player.valid) then return end
-  UI.show_tx_gui(player)
-end
-
 -- TX Window handlers
 local function click_tx_open(event)
   local player = game.players[event.player_index]
@@ -779,26 +772,32 @@ local function click_reset_ok(event)
     }
   end
 
-  if opts.del_log then
-    storage.buffer_lines = {}
-    storage.perline_counter = 0
-    storage.buffer_view = {}
-    storage.gui_dirty = {}
-    
-    storage.run_start_tick = game.tick
+if opts.del_log then
+  storage.buffer_lines = {}
+  storage.perline_counter = 0
+  storage.buffer_view = {}
+  storage.gui_dirty = {}
 
-    if Transaction and Transaction.reset_tx_log then
-      Transaction.reset_tx_log()
-    end
+  -- >>> FIX: Ringpuffer-State ebenfalls resetten
+  storage.buffer_head = 1
+  storage.buffer_size = 0
+  storage._buffer_last_max = nil
+  -- <<<
 
-    local header = SimLog.build_header{
-      mod_name = storage.mod_name,
-      mod_version = storage.mod_version,
-      run_name = storage.run_name or "",
-      start_tick = storage.run_start_tick
-    }
-    Buffer.append_multiline(header)
+  storage.run_start_tick = game.tick
+
+  if Transaction and Transaction.reset_tx_log then
+    Transaction.reset_tx_log()
   end
+
+  local header = SimLog.build_header{
+    mod_name = storage.mod_name,
+    mod_version = storage.mod_version,
+    run_name = storage.run_name or "",
+    start_tick = storage.run_start_tick
+  }
+  Buffer.append_multiline(header)
+end
 
   if opts.new_name and opts.new_name ~= "" then
     storage.run_name = opts.new_name
