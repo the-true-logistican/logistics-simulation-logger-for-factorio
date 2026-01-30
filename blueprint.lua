@@ -1,6 +1,10 @@
 -- =========================================
 -- LogSim (Factorio 2.0) 
 -- Extracts item counts, costs and footprint data from blueprints and blueprint books.
+--
+-- version 0.8.0 first complete working version
+-- version 0.8.1 Blueprint.ui_front_tick_handler()
+--
 -- =========================================
 
 local UI = require("ui")
@@ -8,7 +12,7 @@ local ItemCost = require("itemcost")
 local Chests = require("chests")
 
 local Blueprint = {}
-  Blueprint.version = "0.8.0"
+  Blueprint.version = "0.8.1"
 
 -- Session storage (not persistent)
 local bp_session = {
@@ -329,6 +333,17 @@ function Blueprint.extract_counts_from_book(book_stack)
   return counts
 end
 
+function Blueprint.ui_front_tick_handler()
+  if not storage or not storage._ui_front_tick then return end
+  for pidx, t in pairs(storage._ui_front_tick) do
+    if t and game.tick >= t then
+      local p = game.get_player(pidx)
+      if p then UI.bring_inventory_overlay_to_front(p) end
+      storage._ui_front_tick[pidx] = nil
+    end
+  end
+end
+
 -- =========================================
 -- EVENT HANDLERS
 -- =========================================
@@ -346,7 +361,12 @@ function Blueprint.on_gui_opened(event)
   if item.is_blueprint or item.is_blueprint_book then
     bp_session.sidecar_visible[event.player_index] = true
     UI.show_blueprint_sidecar(player)
+    UI.bring_inventory_overlay_to_front(player)
+    -- extra: nochmal im nächsten Tick, damit wir den Z-Order "gewinnen"
+    storage._ui_front_tick = storage._ui_front_tick or {}
+    storage._ui_front_tick[player.index] = game.tick + 1
   end
+  
 end
 
 function Blueprint.click_bp_extract(event)

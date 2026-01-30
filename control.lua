@@ -22,6 +22,9 @@
 --               complete accounting with export
 -- version 0.8.1 tx window with buttons <<  <  >  >> 
 -- Version 0.8.2 get global parameters from settings
+-- Version 0.8.3 new virtal location WIP / settings added
+-- version 0.8.4 close export Dialog, if owner ist closed
+--                 Blueprint.ui_front_tick_handler()
 -- =========================================
 
 local DEBUG = true
@@ -508,6 +511,8 @@ script.on_event(defines.events.on_tick, function(event)
     tick_update_markers()
     storage.marker_dirty = false
   end
+  
+  Blueprint.ui_front_tick_handler()
 
   Buffer.tick_refresh_open_guis(event.tick)
   
@@ -653,6 +658,7 @@ end
 local function click_tx_hide(event)
   local player = game.players[event.player_index]
   UI.close_tx_gui(player)
+  UI.close_export_dialog_if_owner(player, "tx")
 end
 
 local function click_tx_older(event)
@@ -741,6 +747,7 @@ local function click_hide_or_close(event)
 
   local hf = player.gui.screen[M.GUI_HELP_FRAME]
   if hf and hf.valid then hf.destroy() end
+  UI.close_export_dialog_if_owner(player, "buffer")
 end
 
 local function click_reset_open(event)
@@ -907,6 +914,7 @@ end
 local function click_invwin_close(event)
   local player = game.players[event.player_index]
   UI.close_inventory_window(player)
+  UI.close_export_dialog_if_owner(player, "inv")
 end
 
 script.on_event(defines.events.on_gui_click, function(event)
@@ -938,8 +946,6 @@ script.on_event(defines.events.on_gui_click, function(event)
     click_invwin_copy(event)
   elseif name == "logsim_invwin_close" or name == "logsim_invwin_close_x" then
     click_invwin_close(event)
-  elseif name == M.GUI_BTN_TX_OPEN then
-    click_tx_open(event)
   elseif name == M.GUI_BTN_TX_OPEN then
     click_tx_open(event)
   elseif name == M.GUI_TX_CLOSE or name == M.GUI_TX_BTN_HIDE then

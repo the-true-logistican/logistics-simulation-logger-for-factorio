@@ -417,6 +417,14 @@ function Buffer.tick_refresh_open_guis(tick)
     return
   end
 
+  -- NEW: safety (in case config defaults were not applied yet)
+  if storage._buf_last_gui_refresh_tick == nil then
+    storage._buf_last_gui_refresh_tick = 0
+  end
+  if storage.gui_dirty == nil then
+    storage.gui_dirty = {}
+  end
+  
   local any = false
   for _, v in pairs(storage.gui_dirty) do
     if v then any = true; break end

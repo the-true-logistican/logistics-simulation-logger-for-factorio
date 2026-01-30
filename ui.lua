@@ -4,13 +4,15 @@
 -- version 0.8.0 first complete working version
 -- version 0.8.1 tx window with buttons <<  <  >  >> 
 --               simple filter for transactions with checkboxes
+-- version 0.8.2 close export Dialog, if owner ist closed
+--               Blueprint.ui_front_tick_handler()
 --
 -- =========================================
 
 local M = require("config")
 
 local UI = {}
-UI.version = "0.8.1"
+UI.version = "0.8.2"
 
 -- =======================
 -- functions for markers
@@ -62,6 +64,14 @@ local function _style_key(color, offset, scale, alignment)
     string.format("%.3f", scale or 1.0),
     tostring(alignment or "center"),
   }, "|")
+end
+
+function UI.bring_inventory_overlay_to_front(player)
+  if not player or not player.valid then return end
+  local frame = player.gui.screen[M.GUI_BP_SIDECAR]
+  if frame and frame.valid then
+    if frame.bring_to_front then frame.bring_to_front() end
+  end
 end
 
 -- --- public API --------------------------------------------------------------
@@ -277,17 +287,45 @@ top.add{
   storage.buffer_view[player.index] = { start_line = 1, end_line = 0, follow = true }
 end
 
--- *** NEW: Export Dialog ***
 function UI.show_export_dialog(player)
-  if player.gui.screen[M.GUI_EXPORT_FRAME] then return end
+  local function export_mode_caption(mode)
+    if mode == "tx" then
+      return {"", {"logistics_simulation.export_dialog_title"}, " (", {"logistics_simulation.gui_tx_title"}, ")"}
+    elseif mode == "inv" then
+      return {"", {"logistics_simulation.export_dialog_title"}, " (", {"logistics_simulation.invwin_title"}, ")"}
+    else
+      return {"", {"logistics_simulation.export_dialog_title"}, " (", {"logistics_simulation.gui_buffer_title"}, ")"}
+    end
+  end
+
+  -- Determine current export mode (set by your calling code)
+  local mode = (storage and storage.export_mode) or "buffer"
+
+  -- Single instance per player: if already open, just update caption and bring to front
+  local existing = player.gui.screen[M.GUI_EXPORT_FRAME]
+  if existing and existing.valid then
+    existing.caption = export_mode_caption(mode)
+    if existing.bring_to_front then existing.bring_to_front() end
+
+    if storage then
+      storage.export_owner = storage.export_owner or {}
+      storage.export_owner[player.index] = mode
+    end
+    return
+  end
 
   local frame = player.gui.screen.add{
     type = "frame",
     name = M.GUI_EXPORT_FRAME,
     direction = "vertical",
-    caption = {"logistics_simulation.export_dialog_title"}
+    caption = export_mode_caption(mode)
   }
   frame.auto_center = true
+
+  if storage then
+    storage.export_owner = storage.export_owner or {}
+    storage.export_owner[player.index] = mode
+  end
 
   local content = frame.add{ type = "flow", direction = "vertical" }
   content.style.vertical_spacing = M.GUI_CONTENT_SPACING
@@ -306,21 +344,20 @@ function UI.show_export_dialog(player)
     caption = {"logistics_simulation.export_filename_label"}
   }
 
--- Always generate a fresh default filename (no stale storage.base_filename)
-local function sanitize_filename(s)
-  return (tostring(s):gsub("[^%w%._%-]", "_"))
-end
+  -- Always generate a fresh default filename (SAFE: no unknown helpers)
+  local function sanitize_filename(s)
+    return (tostring(s):gsub("[^%w%._%-]", "_"))
+  end
 
-local run_tick = storage.run_start_tick or game.tick
-local exp_tick = game.tick
-local rn  = sanitize_filename(storage.run_name or "run")
-local ver = sanitize_filename(get_logger_version())
+  local run_tick = (storage and storage.run_start_tick) or 0
+  local exp_tick = game.tick
+  local rn  = sanitize_filename((storage and storage.run_name) or "run")
+  local ver = sanitize_filename(UI.version or "unknown")
 
--- Start with tick (what you want), but also include export tick for uniqueness
-local default_name = string.format(
-  "tick%09d__%s__logsim-v%s__export%09d",
-  run_tick, rn, ver, exp_tick
-)
+  local default_name = string.format(
+    "tick%09d__%s__logsim-v%s__export%09d",
+    run_tick, rn, ver, exp_tick
+  )
 
   local filename_field = name_flow.add{
     type = "textfield",
@@ -384,8 +421,18 @@ end
 function UI.close_export_dialog(player)
   local frame = player.gui.screen[M.GUI_EXPORT_FRAME]
   if frame and frame.valid then frame.destroy() end
+
+  if storage and storage.export_owner then
+    storage.export_owner[player.index] = nil
+  end
 end
 
+-- Close export dialog only if it belongs to the given owner ("buffer" / "tx" / "inv")
+function UI.close_export_dialog_if_owner(player, owner)
+  if not (storage and storage.export_owner) then return end
+  if storage.export_owner[player.index] ~= owner then return end
+  UI.close_export_dialog(player)
+end
 
 function UI.show_help_gui(player)
   if player.gui.screen[M.GUI_HELP_FRAME] then return end

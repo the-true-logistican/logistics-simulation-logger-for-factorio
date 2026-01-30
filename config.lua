@@ -8,6 +8,7 @@
 --               ring buffer M.BUFFER_MAX_LINES load/save secure
 -- Version 0.8.2 get global parameters from settings
 -- Version 0.8.3 introduce WIP (work in progress)
+--               bug in ensure_storage_defaults starting new games
 --
 -- =========================================
 
@@ -339,6 +340,10 @@ function M.ensure_storage_defaults(st)
   -- -------- buffer --------
   st.buffer_lines     = st.buffer_lines or {}
   st.buffer_view      = st.buffer_view or {}
+  
+  -- GUI refresh bookkeeping (MP-safe)
+  st.gui_dirty = st.gui_dirty or {}
+  if st._buf_last_gui_refresh_tick == nil then st._buf_last_gui_refresh_tick = 0 end
 
   -- Buffer ring state (migration-safe)
   if st.buffer_head == nil then st.buffer_head = 1 end
