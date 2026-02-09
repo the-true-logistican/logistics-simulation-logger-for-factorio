@@ -4,7 +4,8 @@ A Factorio 2.x mod focused on observing and logging factory behavior over time.
 This project treats Factorio as a logistics and production simulation, not as a gameplay optimization tool.
 
 Below is the public mod description from the Factorio Mod Portal: [Factory Ledger](https://mods.factorio.com/mod/logistics_simulation)
-activities of players which are relevant to accounting are traces by [Big Brother 1984](https://mods.factorio.com/mod/big_brother_1984)
+
+Activities of players which are relevant to accounting are traces by [Big Brother 1984](https://mods.factorio.com/mod/big_brother_1984)
 
 
 > **"What you cannot measure, you cannot control."** > *(Tom DeMarco)*
