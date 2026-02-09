@@ -10,12 +10,13 @@
 -- Version 0.8.3 introduce WIP (work in progress)
 --               bug in ensure_storage_defaults starting new games
 -- Version 0.8.5 bug in ensure_storage_defaults Migration safety for older saves
+-- Version 0.8.6 Reset clears players inventory too
 --
 -- =========================================
 
 local M = {}
 
-M.version = "0.8.5"
+M.version = "0.8.6"
 
 -- =====================================
 -- Technical Configuration
@@ -31,9 +32,10 @@ M.TX_MAX_EVENTS = 50000     -- max number of transaction records kept in memory
 
 -- End Parameters from Setup
 
-M.POWER_SAMPLES = 5           -- ~1.0s (5 * 0.2s)  
-M.POLLUTION_SAMPLES = 5       -- ~1.0s (5 * 0.2s)
-M.GUI_REFRESH_TICKS = 10      -- throttle GUI refresh (ticks)
+M.POWER_SAMPLES = 5             -- ~1.0s (5 * 0.2s)  
+M.POLLUTION_SAMPLES = 5         -- ~1.0s (5 * 0.2s)
+M.GUI_REFRESH_TICKS = 10        -- throttle GUI refresh (ticks)
+M.CLEANUP_INTERVAL_TICKS = 600  -- 10 seconds - cleanup disconnected players
 M.TEXT_MAX = 1500000
 M.CHUNK_SIZE = 32 
 M.MAX_TELEGRAM_LENGTH = 2000
@@ -55,9 +57,6 @@ M.REG_MARK_OFFSET = { x = 0, y = 0.1 }
 M.PROT_MARK_COLOR  = { r = 1, g = 0.5, b = 0, a = 1 } -- orange-ish
 M.PROT_MARK_SCALE  = 1.0
 M.PROT_MARK_OFFSET = { x = 0, y = -0.7 }
-
--- Performance
-M.CLEANUP_INTERVAL_TICKS = 600  -- 10 seconds - cleanup disconnected players
 
 -- =====================================
 -- GUI Configuration
@@ -132,6 +131,7 @@ M.GUI_RESET_CHK_MACHINES = "logsim_reset_chk_machines"
 M.GUI_RESET_CHK_PROT     = "logsim_reset_chk_prot"
 M.GUI_RESET_NAME_FIELD   = "logsim_reset_name"
 M.GUI_RESET_CHK_STATS    = "logsim_reset_chk_stats"
+M.GUI_RESET_CHK_PLAYERINV = "logsim_reset_chk_playerinv"
 
 M.GUI_BTN_OLDER = "logsim_buffer_older"
 M.GUI_BTN_TAIL  = "logsim_buffer_tail"

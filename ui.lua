@@ -7,13 +7,14 @@
 -- version 0.8.2 close export Dialog, if owner ist closed
 --               Blueprint.ui_front_tick_handler()
 -- version 0.8.3 filter for manual transaction of the player
+-- version 0.8.4 Reset clears players inventory too
 --
 -- =========================================
 
 local M = require("config")
 
 local UI = {}
-UI.version = "0.8.3"
+UI.version = "0.8.4"
 
 -- =======================
 -- functions for markers
@@ -489,6 +490,13 @@ function UI.show_reset_dialog(player)
   
   content.add{
     type = "checkbox",
+    name = M.GUI_RESET_CHK_PLAYERINV,
+    state = true,
+    caption = {"logistics_simulation.reset_player_inentory"}
+  }
+  
+  content.add{
+    type = "checkbox",
     name = M.GUI_RESET_CHK_LOG,
     state = true,
     caption = {"logistics_simulation.reset_log"}
@@ -594,6 +602,7 @@ function UI.read_reset_dialog(player)
 
   return {
     del_items    = chk(M.GUI_RESET_CHK_ITEMS),
+    del_playerinv = chk(M.GUI_RESET_CHK_PLAYERINV),
     del_log      = chk(M.GUI_RESET_CHK_LOG),
     del_chests   = chk(M.GUI_RESET_CHK_CHESTS),
     del_machines = chk(M.GUI_RESET_CHK_MACHINES),

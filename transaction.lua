@@ -1491,4 +1491,19 @@ function Transaction.reset_tx_log()
   Transaction.update_marks()
 end
 
+function Transaction.tx_tick_refresh_open_guis()
+  ensure_defaults()
+  local any = false
+  for _, v in pairs(storage.tx_gui_dirty or {}) do
+    if v then any = true; break end
+  end
+  if not any then return end
+  for _, player in pairs(game.connected_players) do
+    if storage.tx_gui_dirty[player.index] then
+      Transaction.tx_refresh_for_player(player, false)
+      storage.tx_gui_dirty[player.index] = false
+    end
+  end
+end
+
 return Transaction

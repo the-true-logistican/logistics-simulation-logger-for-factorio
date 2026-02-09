@@ -1,12 +1,16 @@
 -- =========================================
 -- LogSim (Factorio 2.0) 
 -- Resets factory state (inventories, belts, pollution, statistics) in a controlled way.
+--
+-- version 0.8.0 first complete working version
+-- version 0.8.1 Reset clears players inventory too
+--
 -- =========================================
 
 local M = require("config")
 
 local R = {}
-R.version = "0.8.0"
+R.version = "0.8.1"
 
 -- FIX: Added validity check for power switches
 local function set_factory_power(surface, state)
@@ -292,6 +296,41 @@ function R.do_reset_simulation(surface, force, log, reset_stats)
   end
   
   set_factory_power(surface, true)
+end
+
+
+-- =========================================
+-- Player inventory wipe (MP-safe)
+-- =========================================
+function R.wipe_player_inventory(player)
+  if not (player and player.valid) then return end
+
+  -- Clear character-related inventories when possible
+  local inv_ids = {
+    defines.inventory.character_main,
+    defines.inventory.character_trash,
+    defines.inventory.character_armor,
+    defines.inventory.character_guns,
+    defines.inventory.character_ammo,
+    defines.inventory.character_vehicle,
+  }
+
+  for _, id in pairs(inv_ids) do
+    local inv = player.get_inventory(id)
+    if inv then inv.clear() end
+  end
+
+  -- Cursor stack (always separate)
+  if player.cursor_stack and player.cursor_stack.valid_for_read then
+    player.cursor_stack.clear()
+  end
+end
+
+function R.wipe_all_player_inventories(players)
+  if not players then return end
+  for _, p in pairs(players) do
+    R.wipe_player_inventory(p)
+  end
 end
 
 return R

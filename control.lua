@@ -26,6 +26,8 @@
 -- Version 0.8.4 close export Dialog, if owner ist closed
 --                 Blueprint.ui_front_tick_handler()
 -- Version 0.8.5 manual transactions traced with mod "BIG Brother 1984"
+-- Version 0.8.6 periodic action moved to on_nth_tick
+--               Reset clears players inventory too
 -- =========================================
 
 local DEBUG = true
@@ -510,12 +512,6 @@ local function tick_build_and_append_logline()
   end
 end
 
-script.on_nth_tick(600, function()
-    if not client_event_id then
-        try_register_at_provider()
-    end
-end)
-
 script.on_event(defines.events.on_runtime_mod_setting_changed, function(e)
   if e.setting == "logsim_sample_interval_ticks" then
     local v = settings.global["logsim_sample_interval_ticks"].value
@@ -523,6 +519,20 @@ script.on_event(defines.events.on_runtime_mod_setting_changed, function(e)
   end
 end)
 
+script.on_nth_tick(M.CLEANUP_INTERVAL_TICKS, function()
+  if not client_event_id then
+    try_register_at_provider()
+  end
+  Buffer.cleanup_disconnected_players()
+  if Blueprint.cleanup_all_disconnected then
+    Blueprint.cleanup_all_disconnected()
+  end	
+end)
+
+script.on_nth_tick(M.GUI_REFRESH_TICKS, function()
+  Buffer.tick_refresh_open_guis()
+  Transaction.tx_tick_refresh_open_guis()
+end)
 
 script.on_event(defines.events.on_tick, function(event)
   -- Transactions (in-memory): observe inserter movements every tick
@@ -552,27 +562,12 @@ script.on_event(defines.events.on_tick, function(event)
     storage._needs_rendering_cleanup = false
   end
 
-  if (event.tick % M.CLEANUP_INTERVAL_TICKS) == 0 then
-    Buffer.cleanup_disconnected_players()
-    -- NEU: Blueprint session cleanup
-    if Blueprint.cleanup_all_disconnected then
-      Blueprint.cleanup_all_disconnected()
-    end	
-  end
-
   if storage.marker_dirty then
     tick_update_markers()
     storage.marker_dirty = false
   end
   
   Blueprint.ui_front_tick_handler()
-
-  Buffer.tick_refresh_open_guis(event.tick)
-  
-  -- TX GUI refresh (throttled, like Buffer)
-  if Transaction and Transaction.tx_tick_refresh_open_guis then
-    Transaction.tx_tick_refresh_open_guis(event.tick)
-  end
 
   -- Clean up blueprint sidecars (delegated to blueprint module)
   Blueprint.tick_cleanup_sidecars()
@@ -822,6 +817,11 @@ local function click_reset_ok(event)
 
   if opts.del_items then
     R.do_reset_simulation(player.surface, player.force, Buffer.append_line, opts.del_stats)
+  end
+
+  if opts.del_playerinv then
+    -- Wipe all player inventories (MP-safe)
+    R.wipe_all_player_inventories(game.players)
   end
 
   if opts.del_chests or opts.del_machines or opts.del_prot then

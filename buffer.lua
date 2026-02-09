@@ -409,18 +409,9 @@ local text = prefix .. Buffer.get_text_range(view.start_line, view.end_line)
   end
 end
 
-function Buffer.tick_refresh_open_guis(tick)
+function Buffer.tick_refresh_open_guis()
   Buffer.ensure_defaults()
-  tick = tick or game.tick
 
-  if (tick - storage._buf_last_gui_refresh_tick) < M.GUI_REFRESH_TICKS then
-    return
-  end
-
-  -- NEW: safety (in case config defaults were not applied yet)
-  if storage._buf_last_gui_refresh_tick == nil then
-    storage._buf_last_gui_refresh_tick = 0
-  end
   if storage.gui_dirty == nil then
     storage.gui_dirty = {}
   end
@@ -429,10 +420,7 @@ function Buffer.tick_refresh_open_guis(tick)
   for _, v in pairs(storage.gui_dirty) do
     if v then any = true; break end
   end
-  if not any then
-    storage._buf_last_gui_refresh_tick = tick
-    return
-  end
+  if not any then return end
 
   for _, player in pairs(game.connected_players) do
     if storage.gui_dirty[player.index] then
@@ -441,7 +429,6 @@ function Buffer.tick_refresh_open_guis(tick)
     end
   end
 
-  storage._buf_last_gui_refresh_tick = tick
 end
 
 return Buffer
