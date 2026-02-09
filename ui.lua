@@ -6,13 +6,14 @@
 --               simple filter for transactions with checkboxes
 -- version 0.8.2 close export Dialog, if owner ist closed
 --               Blueprint.ui_front_tick_handler()
+-- version 0.8.3 filter for manual transaction of the player
 --
 -- =========================================
 
 local M = require("config")
 
 local UI = {}
-UI.version = "0.8.2"
+UI.version = "0.8.3"
 
 -- =======================
 -- functions for markers
@@ -815,6 +816,15 @@ function UI.show_tx_gui(player)
     state = false,
     caption = {"logistics_simulation.tx_filter_other"},
     tooltip = {"logistics_simulation.tx_filter_other_tooltip"}
+  }
+
+  -- Manual player actions (Big Brother)
+  top.add{
+    type = "checkbox",
+    name = "logsim_tx_chk_manual",
+    state = true,
+    caption = {"logistics_simulation.tx_filter_manual"},
+    tooltip = {"logistics_simulation.tx_filter_manual_tooltip"}
   }
 
   top.add{ type = "empty-widget" }.style.width = 16

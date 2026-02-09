@@ -7,10 +7,11 @@
 --   Each physical move is represented as TWO postings:
 --     1) TAKE (source decreases)
 --     2) GIVE (destination increases)
---     3) OBJ_TRANSIT = "T00"
---     4) OBJ_SHIP    = "SHIP"
---     5) OBJ_RECV    = "RECV"
---     6) OBJ_WIP     = "WIP"   (NEW)
+--     3) OBJ_TRANSIT = "T00"   inernal transit
+--     4) OBJ_SHIP    = "SHIP"  outbount shipping
+--     5) OBJ_RECV    = "RECV"  inbound receive 
+--     6) OBJ_WIP     = "WIP"   work in origress  
+--     7) OBJ_MAN     = "MAN"   manual crafting
 --
 -- Rules (Martin):
 --   - Full inventory snapshots remain as anchors (handled elsewhere)
@@ -18,9 +19,9 @@
 --   - Only *registered* objects matter (Cxx, Txx, Mxx)
 --   - Inserters are NOT manually registered; they get an auto ID (Ixx)
 --   - For now: no file export; events stay in memory
---   - Optional: mark "participating" inserters in yellow with text Ixx
+--   - automatic mark "participating" inserters in yellow with text Ixx
 --   - Allow explicitly marking watched inserters as "active" (green)
---   - Active boundary inserters represent Shipping/Receiving interface
+--   - Active boundary inserters represent Shipping/Receiving interface (pink)
 --
 -- version 0.8.0 first complete working version
 -- version 0.8.1 tx window with buttons <<  <  >  >> 
@@ -29,6 +30,8 @@
 --               ring buffer M.TX_MAX_EVENTS load/save secure
 -- Version 0.8.2 get global parameters from settings
 -- Version 0.8.3 WIP virtual account + Shift-R toggle normal/WIP/OFF (minimal additions)
+-- Version 0.8.4 transactions with the "hand" of the player
+--               crafting in wirtual inventpry MAN
 --
 -- =========================================
 
@@ -37,7 +40,7 @@ local UI = require("ui")
 local Util = require("utility")  -- fly() lives here
 
 local Transaction = {}
-Transaction.version = "0.8.3"
+Transaction.version = "0.8.4"
 
 -- forward declarations (needed because ensure_defaults() uses them)
 local tx_rb_ensure
@@ -59,6 +62,12 @@ local function ensure_defaults()
 
   -- Keep TX ringbuffer settings in sync with config/settings across save/load.
   tx_rb_ensure()
+
+  -- NEW: player "hands" as pseudo-inserters (H01, H02, ...)
+  -- Minimal: provide an inserter-like list for later ledger logic.
+  storage.tx_hand_by_player_index = storage.tx_hand_by_player_index or {}
+  storage.tx_hand_list = storage.tx_hand_list or {}
+  storage.tx_inserter_list = storage.tx_inserter_list or {}
 
   local desired_max =
     tonumber(storage.tx_max_events)
@@ -512,6 +521,103 @@ local OBJ_TRANSIT = "T00"
 local OBJ_SHIP    = "SHIP"
 local OBJ_RECV    = "RECV"
 local OBJ_WIP     = "WIP"
+local OBJ_MAN     = "MAN"
+
+-- Player inventory pseudo objects
+local function fmt_player_inv_id_from_hand_id(hand_id)
+  if type(hand_id) ~= "string" then return nil end
+  return (hand_id:gsub("^H", "P"))
+end
+
+-- Resolve BigBrother source/target to ledger object id
+local function obj_id_for_manual_location(loc, player_index)
+  if not loc then return OBJ_TRANSIT end
+
+  -- Player inventory
+  if type(loc.type) == "string" then
+    local t = string.lower(loc.type)
+    if string.find(t, "inventory", 1, true) or t == "player" then
+      local hand = storage.tx_hand_by_player_index and storage.tx_hand_by_player_index[player_index] or nil
+      local pid = hand and fmt_player_inv_id_from_hand_id(hand.id) or nil
+      return pid or OBJ_TRANSIT
+    end
+  end
+
+  -- Entity by unit_number (BigBrother provides id)
+  local unit = tonumber(loc.id)
+  if unit and storage.tx_obj_by_unit and storage.tx_obj_by_unit[unit] then
+    return storage.tx_obj_by_unit[unit]
+  end
+
+	-- Manual crafting / Make / handwork location (treat as MAN instead of Transit)
+	if type(loc.type) == "string" then
+	  local t = string.lower(loc.type)
+	  local slot = type(loc.slot_name) == "string" and string.lower(loc.slot_name) or ""
+
+	  if string.find(t, "craft", 1, true)
+		or string.find(t, "make", 1, true)
+		or string.find(t, "manual", 1, true)
+		or string.find(t, "hand", 1, true)
+		or string.find(slot, "craft", 1, true)
+		or string.find(slot, "make", 1, true)
+	  then
+		return OBJ_MAN
+	  end
+	end
+
+
+  return OBJ_TRANSIT
+end
+
+-- Public: ingest manual player logistics events provided by "Big Brother"
+-- le schema (as provided by control.lua):
+--   le.action: "TAKE" | "GIVE"
+--   le.tick
+--   le.actor.player_index (or le.actor.id)
+--   le.item.name, le.item.quantity, optional le.item.quality
+--   le.source_or_target: {type=..., id=..., slot_name=...}
+function Transaction.ingest_manual_logistics_event(le)
+  ensure_defaults()
+  if not le then return end
+
+  -- Rebuild hands in case players changed (cheap)
+  if Transaction.rebuild_hand_list then
+    Transaction.rebuild_hand_list()
+  end
+
+  local actor = le.actor or {}
+  local player_index = actor.player_index or actor.player or actor.id
+  player_index = tonumber(player_index)
+
+  local hand = (player_index and storage.tx_hand_by_player_index and storage.tx_hand_by_player_index[player_index]) or nil
+  local ins_id = hand and hand.id or "H00"
+
+  local tick = tonumber(le.tick) or game.tick
+  local kind = le.action
+  if kind ~= "TAKE" and kind ~= "GIVE" then return end
+
+  local item = le.item or {}
+  local name = item.name
+  local qty = tonumber(item.quantity) or tonumber(item.count) or 0
+  if not name or qty == 0 then return end
+
+  local qual = item.quality or "normal"
+  local loc = le.source_or_target
+  local obj = obj_id_for_manual_location(loc, player_index)
+  local obj_unit = tonumber(loc and loc.id) or nil
+
+  push_event({
+    tick = tick,
+    ins_id = ins_id,
+    ins_unit = nil,
+    kind = kind,
+    obj = obj,
+    obj_unit = obj_unit,
+    item = name,
+    cnt = qty,
+    qual = qual
+  })
+end
 
 local function opposite_obj(ins_unit, src_obj, dst_obj)
   local is_active = Transaction.is_inserter_active and Transaction.is_inserter_active(ins_unit)
@@ -560,6 +666,86 @@ local function resolve_inserter_by_meta(unit)
   end
 
   return nil
+end
+
+-- -----------------------------------------
+-- Player hands (pseudo-inserters)
+--   H01, H02, ... for all players
+-- -----------------------------------------
+
+local function fmt_hand_id(n)
+  return string.format("H%02d", tonumber(n) or 0)
+end
+
+function Transaction.rebuild_hand_list()
+  ensure_defaults()
+
+  local by_player = {}
+  local list = {}
+
+  local n = 1
+  -- Deterministic: iterate by numeric index (game.players is a LuaCustomTable userdata; ipairs() won't work)
+  for i = 1, #game.players do
+    local p = game.players[i]
+    if p and p.valid then
+      local rec = {
+        id = fmt_hand_id(n),
+        kind = "hand",
+        player_index = p.index,
+        name = p.name
+      }
+      by_player[p.index] = rec
+      list[#list+1] = rec
+      n = n + 1
+    end
+  end
+
+  storage.tx_hand_by_player_index = by_player
+  storage.tx_hand_list = list
+end
+
+function Transaction.rebuild_inserter_list()
+  ensure_defaults()
+
+  -- Always refresh hands first (players can join/leave anytime)
+  Transaction.rebuild_hand_list()
+
+  local list = {}
+
+  -- Hands at the beginning
+  for _, h in ipairs(storage.tx_hand_list or {}) do
+    list[#list+1] = h
+  end
+
+  -- Then watched inserters
+  local units = {}
+  for ins_unit, _ in pairs(storage.tx_watch or {}) do
+    units[#units+1] = ins_unit
+  end
+
+  table.sort(units, function(a, b)
+    -- Prefer stable inserter IDs (Ixx) if known, otherwise fallback to unit_number
+    local ra = storage.tx_inserter_by_unit and storage.tx_inserter_by_unit[a] or nil
+    local rb = storage.tx_inserter_by_unit and storage.tx_inserter_by_unit[b] or nil
+    local ida = ra and ra.id or nil
+    local idb = rb and rb.id or nil
+
+    if ida and idb then return tostring(ida) < tostring(idb) end
+    if ida and not idb then return true end
+    if not ida and idb then return false end
+    return tonumber(a) < tonumber(b)
+  end)
+
+  for _, ins_unit in ipairs(units) do
+    local rec = get_or_create_inserter_rec(ins_unit)
+    list[#list+1] = {
+      id = rec.id,
+      kind = "inserter",
+      ins_unit = ins_unit
+    }
+  end
+
+  storage.tx_inserter_list = list
 end
 
 function Transaction.is_boundary_inserter(ins_unit)
@@ -805,6 +991,10 @@ function Transaction.rebuild_watchlist()
     end
   end
 
+  -- NEW: build combined inserter list (hands first, then watched inserters)
+  -- Minimal: just makes Hxx available wherever we iterate inserter lists.
+  Transaction.rebuild_inserter_list()
+
   Transaction.update_marks()
 end
 
@@ -1002,7 +1192,7 @@ end
 local function tx_get_filters_from_ui(player)
   -- No persistence: UI is the source of truth.
   -- Defaults match UI defaults when the dialog opens.
-  local f = { inbound=true, outbound=true, transit=true, wip=true, other=false }
+  local f = { inbound=true, outbound=true, transit=true, wip=true, other=false, manual=true }
 
   if not (player and player.valid) then return f end
   local frame = player.gui.screen[Config.GUI_TX_FRAME]
@@ -1023,8 +1213,16 @@ local function tx_get_filters_from_ui(player)
   f.transit  = read_chk("logsim_tx_chk_transit",  true)
   f.wip      = read_chk("logsim_tx_chk_wip",      true)
   f.other    = read_chk("logsim_tx_chk_other",    false)
+  f.manual   = read_chk("logsim_tx_chk_manual",   true)
 
   return f
+end
+
+local function tx_is_manual_event(ev)
+  local ins = ev and ev.ins_id or nil
+  if type(ins) ~= "string" then return false end
+  -- H01/H02/... are player hands; H00 is unknown hand fallback
+  return ins:sub(1,1) == "H"
 end
 
 local function tx_event_class(ev)
@@ -1053,9 +1251,18 @@ local function tx_get_text_window_filtered(player, start_idx, surface)
   while i <= n and #lines < TX_WINDOW_LINES do
     local ev = tx_rb_get_event(i)
     if ev then
-      local cls = tx_event_class(ev)
-      if flt[cls] then
-        lines[#lines + 1] = Transaction.tx_get_line(i, surface)
+      -- Manual filter is orthogonal to the buffer/account class filters.
+      -- If an event is manual (player hand Hxx), it is shown iff the manual
+      -- checkbox is enabled, independent of inbound/outbound/transit/wip/other.
+      if tx_is_manual_event(ev) then
+        if flt.manual then
+          lines[#lines + 1] = Transaction.tx_get_line(i, surface)
+        end
+      else
+        local cls = tx_event_class(ev)
+        if flt[cls] then
+          lines[#lines + 1] = Transaction.tx_get_line(i, surface)
+        end
       end
     end
     last_scanned = i

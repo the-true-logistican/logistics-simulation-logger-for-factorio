@@ -3,7 +3,7 @@ data:extend({
     type = "int-setting",
     name = "logsim_sample_interval_ticks",
     setting_type = "runtime-global",
-    default_value = 173,
+    default_value = 112,
     minimum_value = 30,
     order = "a[sampling]-a[interval]"
   },

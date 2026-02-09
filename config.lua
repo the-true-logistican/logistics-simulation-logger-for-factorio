@@ -9,12 +9,13 @@
 -- Version 0.8.2 get global parameters from settings
 -- Version 0.8.3 introduce WIP (work in progress)
 --               bug in ensure_storage_defaults starting new games
+-- Version 0.8.5 bug in ensure_storage_defaults Migration safety for older saves
 --
 -- =========================================
 
 local M = {}
 
-M.version = "0.8.3"
+M.version = "0.8.5"
 
 -- =====================================
 -- Technical Configuration
@@ -24,7 +25,7 @@ M.version = "0.8.3"
 
 -- ticks_per_day (z.B. 25 000) → Spielzeit / Tageslänge
 -- 1 ISO-Minute = 1/1440 of one Factorio-Day
-M.SAMPLE_INTERVAL_TICKS = 173 -- (60fps) this is 10min in ISO-Time (exact 173,6)
+M.SAMPLE_INTERVAL_TICKS = 125 -- (60fps) this is 10min in ISO-Time (exact 173,6)
 M.BUFFER_MAX_LINES = 5000    -- max number of complete inventory
 M.TX_MAX_EVENTS = 50000     -- max number of transaction records kept in memory
 
@@ -233,31 +234,17 @@ M.ITEM_ALIASES = {
 -- =====================================
 
 local function apply_sample_interval_from_config()
-  -- Source of truth: Mod settings (runtime-global). Fallback: config.lua constant.
   local cfg = nil
-  if settings and settings.global and settings.global["logsim_sample_interval_ticks"] then
-    cfg = settings.global["logsim_sample_interval_ticks"].value
+  local s = settings and settings.global and settings.global["logsim_sample_interval_ticks"]
+  if s then
+    cfg = s.value
   end
   if cfg == nil then
     cfg = M.SAMPLE_INTERVAL_TICKS
   end
-
-  -- Validate
   if type(cfg) ~= "number" or cfg < 1 then
-    -- hard warning, but KEEP old stored value so the mod continues
-    log(string.format("[LogSim][ERROR] Invalid SAMPLE_INTERVAL_TICKS=%s. Keeping stored sample_interval=%s",
-      tostring(cfg), tostring(storage.sample_interval)))
-
-    for _, p in pairs(game.players) do
-      if p and p.valid then
-        p.print({"", "[LogSim] ERROR: SAMPLE_INTERVAL_TICKS invalid (", tostring(cfg),
-                 "). Keeping old interval: ", tostring(storage.sample_interval)})
-      end
-    end
     return
   end
-
-  -- ALWAYS apply
   storage.sample_interval = cfg
 end
 
@@ -354,6 +341,46 @@ function M.ensure_storage_defaults(st)
   st.registry_last_id = st.registry_last_id or 0
   st.protected = st.protected or {}
 
+  -- -------- registry counters (migration + re-enable safe) --------
+  local function max_id_from(map, prefix)
+    local max_n = 0
+    if map then
+      for _, rec in pairs(map) do
+        if rec and rec.id then
+          local n = tonumber(string.match(rec.id, "^" .. prefix .. "(%d+)$"))
+          if n and n > max_n then max_n = n end
+        end
+      end
+    end
+    return max_n
+  end
+
+  -- chests + tanks share storage.registry (ids Cxx / Txx)
+  if st.next_chest_id == nil then st.next_chest_id = max_id_from(st.registry, "C") + 1 end
+  if st.next_tank_id  == nil then st.next_tank_id  = max_id_from(st.registry, "T") + 1 end
+
+  -- protected (Pxx)
+  if st.next_protect_id == nil then st.next_protect_id = max_id_from(st.protected, "P") + 1 end
+
+  -- machines (Mxx)
+  st.machines = st.machines or {}
+  if st.next_machine_id == nil then st.next_machine_id = max_id_from(st.machines, "M") + 1 end
+
+-- -------- machines --------
+  -- Machines are tracked separately from the generic registry.
+  -- When the mod is disabled/enabled, persistent storage may be recreated without these keys.
+  st.machines = st.machines or {}
+  if st.next_machine_id == nil then
+    local max_id = 0
+    for _, rec in pairs(st.machines) do
+      if rec and rec.id then
+        local n = tonumber(string.match(rec.id, "^M(%d+)$"))
+        if n and n > max_id then max_id = n end
+      end
+    end
+    st.next_machine_id = max_id + 1
+  end
+
   -- -------- export counters / filenames --------
   st.export_counter = st.export_counter or 0
   st.export_counter_tx = st.export_counter_tx or 0
@@ -365,6 +392,20 @@ function M.ensure_storage_defaults(st)
   st.tx_active_inserters = st.tx_active_inserters or {}
   storage.tx_wip_inserters = storage.tx_wip_inserters or {}
   st.tx_object_map = st.tx_object_map or {}
+
+  -- Player hands as pseudo-inserters (H01, H02, ...)
+  st.tx_hand_by_player_index = st.tx_hand_by_player_index or {}
+  st.tx_hand_list = st.tx_hand_list or {}
+  -- Combined list: hands first, then inserters (rebuilt regularly)
+  st.tx_inserter_list = st.tx_inserter_list or {}
+  
+  -- Migration safety for older saves
+  -- transaction.lua expects these keys to exist.
+  st.tx_inserter_by_unit = st.tx_inserter_by_unit or {}
+  st.tx_next_inserter_id = st.tx_next_inserter_id or 1
+  st.tx_watch_meta = st.tx_watch_meta or {}
+  -- transaction.lua uses tx_obj_by_unit (new name); keep alias to older tx_object_map.
+  st.tx_obj_by_unit = st.tx_obj_by_unit or st.tx_object_map or {}
   
   -- TX ringbuffer state (migration-safe)
   st.tx_head = st.tx_head or 1
@@ -374,12 +415,13 @@ function M.ensure_storage_defaults(st)
   -- Rendering ids
   st.tx_mark_render_ids = st.tx_mark_render_ids or {}
 
-  -- virtual buffers derived from TX postings (running balances)
+-- virtual buffers derived from TX postings (running balances)
   st.tx_virtual = st.tx_virtual or {
     T00  = {}, -- transition
     SHIP = {}, -- shipmewnt
     RECV = {}, -- reveive
     WIP  = {}, -- work in progress
+    MAN  = {}, -- manual work
   }
 
   return st

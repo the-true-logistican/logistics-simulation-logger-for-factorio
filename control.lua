@@ -23,8 +23,9 @@
 -- version 0.8.1 tx window with buttons <<  <  >  >> 
 -- Version 0.8.2 get global parameters from settings
 -- Version 0.8.3 new virtal location WIP / settings added
--- version 0.8.4 close export Dialog, if owner ist closed
+-- Version 0.8.4 close export Dialog, if owner ist closed
 --                 Blueprint.ui_front_tick_handler()
+-- Version 0.8.5 manual transactions traced with mod "BIG Brother 1984"
 -- =========================================
 
 local DEBUG = true
@@ -42,6 +43,8 @@ local Transaction = require("transaction")
 local Util = require("utility")
 
 local _needs_marker_refresh_after_load = false
+local PROVIDER_API = "logistics_events_api"
+local client_event_id = nil
 
 -- Forward declarations
 local debug_print
@@ -51,6 +54,42 @@ local handle_runname_submit
 local resolve_entity
 local cleanup_entity_from_registries
 local clear_invalid_rendering_objects
+
+
+-- Funktion, die die Daten vom Provider verarbeitet
+local function handle_logistics_event(event)
+    local le = event.logistics_event
+    if not le then return end
+
+    -- Feed manual actions into transaction log (player hand behaves like pseudo-inserter Hxx)
+    if Transaction and Transaction.ingest_manual_logistics_event then
+        Transaction.ingest_manual_logistics_event(le)
+    end
+
+    -- Gleiche Ausgabe wie im Big Brother, markiert als [CLIENT]
+    local location_str = le.source_or_target.type .. " [ID:" .. le.source_or_target.id .. "] Slot:" .. le.source_or_target.slot_name
+    
+--    if le.action == "TAKE" then
+--        game.print("[CLIENT] TAKE | Tick:" .. le.tick .. " | Actor:" .. le.actor.type .. " | Item:" .. le.item.name .. " | Qty:" .. le.item.quantity)
+--    else
+--        game.print("[CLIENT] GIVE | Tick:" .. le.tick .. " | Actor:" .. le.actor.type .. " | Target:" .. location_str .. " | Item:" .. le.item.name)
+--    end
+end
+
+-- Funktion zur Registrierung des Events
+local function try_register_at_provider()
+    -- Prüfen, ob das Interface des Big Brother existiert
+    if remote.interfaces[PROVIDER_API] then
+        local event_id = remote.call(PROVIDER_API, "get_event_id")
+        
+        if event_id then
+            client_event_id = event_id
+            -- Das Event dynamisch abonnieren
+            script.on_event(client_event_id, handle_logistics_event)
+            game.print("[Logistics-Client] Erfolgreich beim Big Brother registriert. Event-ID: " .. tostring(event_id))
+        end
+    end
+end
 
 -- -----------------------------------------
 -- Helper Functions
@@ -112,14 +151,11 @@ debug_print = function(msg)
   end
 end
 
-
 info_print = function(player, msg)
   if not storage.info_mode then return end
   if not (player and player.valid) then return end
   player.print(msg)
 end
-
-
 
 ensure_storage_defaults = function()
   M.ensure_storage_defaults(storage)
@@ -129,7 +165,6 @@ local function init_storage()
   storage = storage or {}
   M.ensure_storage_defaults(storage)
 end
-
 
 build_base_filename = function(run_name, start_tick)
   local rn = Util.sanitize_filename(run_name or "run")
@@ -245,6 +280,7 @@ end
 -- -----------------------------------------
 
 script.on_init(function()
+  try_register_at_provider()
   init_storage()
   debug_print({"logistics_simulation.mod_initialised"})
   -- Transactions: build initial maps/watchlist (in-memory only)
@@ -258,6 +294,7 @@ script.on_init(function()
 end)
 
 script.on_configuration_changed(function(data)
+  try_register_at_provider()
   init_storage()
   local mod_changes = data.mod_changes and data.mod_changes["logistics_simulation"]
   if mod_changes then
@@ -310,9 +347,11 @@ commands.add_command("prot", "Protocol Recording: /prot on | /prot off", functio
   
   if arg == "on" then
     storage.protocol_active = true
+    storage.tx_active = true
     player.print({"logistics_simulation.cmd_prot_on"})
   elseif arg == "off" then
     storage.protocol_active = false
+    storage.tx_active = false
     player.print({"logistics_simulation.cmd_prot_off"})
   else
     player.print({"logistics_simulation.cmd_prot_usage"})
@@ -470,6 +509,20 @@ local function tick_build_and_append_logline()
     ::continue::
   end
 end
+
+script.on_nth_tick(600, function()
+    if not client_event_id then
+        try_register_at_provider()
+    end
+end)
+
+script.on_event(defines.events.on_runtime_mod_setting_changed, function(e)
+  if e.setting == "logsim_sample_interval_ticks" then
+    local v = settings.global["logsim_sample_interval_ticks"].value
+    game.print("SETTING CHANGED -> " .. tostring(v))
+  end
+end)
+
 
 script.on_event(defines.events.on_tick, function(event)
   -- Transactions (in-memory): observe inserter movements every tick
