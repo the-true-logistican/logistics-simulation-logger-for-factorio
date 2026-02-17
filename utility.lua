@@ -1,11 +1,15 @@
 -- =========================================
 -- LogSim (Factorio 2.0) 
 -- Shared helper functions (time conversion, flying text, filename sanitizing).
+--
+-- version 0.8.0 first complete working version
+-- version 0.8.1 Simple Days-Time-Clock
+--
 -- =========================================
 
 local Util = {}
 
-  Util.version = "0.8.0"
+  Util.version = "0.8.1"
 
 -- Factorio day starts at noon; we shift by +0.5 day so that 00:00 maps to midnight.
 -- Provides ISO-8601 UTC-like timestamps and Excel-friendly datetime strings.
@@ -60,20 +64,28 @@ local function get_tpd(surface)
 end
 
 -- Core: tick -> (day_index starting at 1) + day fraction (0..1 from midnight) + h/m/s
-local function tick_to_parts(tick, tpd)
-  tick = tonumber(tick) or 0
+local function tick_to_parts(tick, tpd, surface)
+ tick = tonumber(tick) or 0
   tpd = tonumber(tpd) or 25000
 
-  -- Shift by +0.5 day so that "midnight" becomes 0.0
-  local shifted = tick + (tpd * 0.5)
-
-  local day = math.floor(shifted / tpd) + 1
-  local day_frac = (shifted % tpd) / tpd
-
-  local total_seconds = math.floor(day_frac * 86400 + 0.5) % 86400
-  local hh = math.floor(total_seconds / 3600)
-  local mm = math.floor((total_seconds % 3600) / 60)
-  local ss = total_seconds % 60
+  local day = math.floor( (tick + tpd/4) / tpd) + 1
+  
+  -- HOL EINFACH DAYTIME VOM SURFACE!
+  local day_frac = 0
+  if surface then
+    if surface.valid then
+      day_frac = surface.daytime or 0
+    end
+  end
+  
+  -- daytime 0..1 → Stunden (0 = noon = 12:00, 0.5 = midnight = 00:00)
+  local hours_decimal = (day_frac * 24 + 12) % 24  -- 0..24
+  local hh = math.floor(hours_decimal)             -- Stunden
+  local minutes_decimal = (hours_decimal % 1) * 60 -- Rest in Minuten
+  local mm = math.floor(minutes_decimal)           -- Minuten
+  local ss = math.floor((minutes_decimal % 1) * 60) -- Rest in Sekunden
+  
+  local total_seconds = hh * 3600 + mm * 60 + ss
 
   return day, day_frac, hh, mm, ss, total_seconds
 end
@@ -85,7 +97,10 @@ end
 -- Returns a table with breakdown (no date mapping).
 function Util.to_parts(tick, surface)
   local tpd = get_tpd(surface)
-  local day, day_frac, hh, mm, ss, total_seconds = tick_to_parts(tick, tpd)
+  if surface then
+    local day, day_frac, hh, mm, ss, total_seconds = tick_to_parts(tick, tpd, surface)
+  end
+
   return {
     day = day,                 -- 1..n
     day_frac = day_frac,       -- 0..1 from midnight
@@ -99,7 +114,7 @@ end
 -- Seconds since base_date 00:00:00 (synthetic "UTC-like" time axis).
 function Util.to_sec_utc(tick, surface)
   local tpd = get_tpd(surface)
-  local day, _, _, _, _, total_seconds = tick_to_parts(tick, tpd)
+  local day, _, _, _, _, total_seconds = tick_to_parts(tick, tpd, surface)
   return (day - 1) * 86400 + total_seconds
 end
 
@@ -110,7 +125,7 @@ function Util.to_iso_utc(tick, surface, base_date)
   local base_days_1970 = days_from_civil(y0, m0, d0)
 
   local tpd = get_tpd(surface)
-  local day, _, hh, mm, ss, _ = tick_to_parts(tick, tpd)
+  local day, _, hh, mm, ss, _ = tick_to_parts(tick, tpd, surface)
 
   local z1970 = base_days_1970 + (day - 1)
   local y, m, d = civil_from_days(z1970)
@@ -128,7 +143,7 @@ function Util.to_excel_datetime(tick, surface, base_date)
   local base_days_1970 = days_from_civil(y0, m0, d0)
 
   local tpd = get_tpd(surface)
-  local day, _, hh, mm, ss, _ = tick_to_parts(tick, tpd)
+  local day, _, hh, mm, ss, _ = tick_to_parts(tick, tpd, surface)
 
   local z1970 = base_days_1970 + (day - 1)
   local y, m, d = civil_from_days(z1970)
@@ -138,6 +153,20 @@ function Util.to_excel_datetime(tick, surface, base_date)
     pad2(hh), pad2(mm), pad2(ss)
   )
 end
+
+-- Excel-friendly datetime string: "YYYY-MM-DD HH:MM:SS"
+-- Excel ist mit Leerzeichen oft weniger zickig als mit "T...Z".
+function Util.to_excel_daystime(tick, surface, base_date)
+  local y0, m0, d0 = parse_base_date(base_date)
+  local base_days_1970 = days_from_civil(y0, m0, d0)
+  local tpd = get_tpd(surface)
+  local day, _, hh, mm, ss, _ = tick_to_parts(tick, tpd, surface)
+
+  local z1970 = (day - 1)
+
+  return string.format(" days %s %s:%s", z1970, pad2(hh), pad2(mm) )
+end
+
 
 -- =========================================
 -- Helper: Flying Text

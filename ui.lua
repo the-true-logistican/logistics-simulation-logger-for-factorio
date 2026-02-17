@@ -8,13 +8,105 @@
 --               Blueprint.ui_front_tick_handler()
 -- version 0.8.3 filter for manual transaction of the player
 -- version 0.8.4 Reset clears players inventory too
+--               Simple Days-Time-Clock
 --
 -- =========================================
 
 local M = require("config")
+local mod_gui = require("mod-gui")
 
 local UI = {}
 UI.version = "0.8.4"
+
+local mod_gui = require("mod-gui")
+local FRAME_NAME = "logsim_ui_placeholder_frame"
+local LABEL_NAME = "logsim_ui_placeholder_label"
+
+function UI.ensure_placeholder_frame(player)
+    if not (player and player.valid) then return end
+    
+    -- GEÄNDERT: button_flow statt frame_flow
+    local flow = mod_gui.get_button_flow(player)
+    local frame = flow[FRAME_NAME]
+    
+    if not (frame and frame.valid) then
+        frame = flow.add{
+            type = "frame",
+            name = FRAME_NAME,
+            direction = "vertical"
+        }  
+        frame.style.width = 120
+        frame.style.padding = 6
+    end
+
+
+    if not (frame and frame.valid) then
+        frame = flow.add{
+            type = "frame",
+            name = FRAME_NAME,
+            direction = "vertical"
+        }  
+        frame.style.width = 120
+        frame.style.padding = 6
+    end
+    
+    if not (frame[LABEL_NAME] and frame[LABEL_NAME].valid) then
+        local label = frame.add{
+            type = "label",
+            name = LABEL_NAME,
+            caption = ""
+        }
+        label.style.font = "default-bold"
+        label.style.single_line = false
+        label.style.maximal_width = 120
+    end
+
+    UI.build_topbar(player)
+end
+
+local function set_status_text(player, text)
+    if not (player and player.valid) then return end
+    
+    local flow = mod_gui.get_button_flow(player)
+    local frame = flow[FRAME_NAME]
+    
+    if not (frame and frame.valid) then return end
+    local label = frame[LABEL_NAME]
+    if not (label and label.valid) then return end
+    
+    label.caption = text or ""
+    
+    -- Darkness-Wert holen (0 = voller Tag, 1 = tiefste Nacht)
+    local darkness = player.surface.darkness
+    
+    -- Wenn darkness > 0.5, dann ist es "Nacht"
+    local is_night = (darkness > 0.5)
+    
+    if is_night then
+        -- NACHT: Helle Schrift (z.B. Gelb oder Hellblau)
+        label.style.font_color = {r=0.6, g=0.7, b=1}  -- Blaue Nacht
+    else
+        -- TAG: Normale/dunkle Schrift
+        label.style.font_color = {r=1, g=1, b=0.7}  -- Sonnengelb
+    end
+end
+
+
+-- DAS ist die wichtige Funktion
+function UI.set_status_text(player, text)
+    if not (player and player.valid) then return end
+    
+    set_status_text(player, text)
+
+    local flow = mod_gui.get_button_flow(player)
+    local frame = flow[FRAME_NAME]
+    
+    if not (frame and frame.valid) then return end
+    local label = frame[LABEL_NAME]
+    if not (label and label.valid) then return end
+    
+    label.caption = text or ""
+end
 
 -- =======================
 -- functions for markers
@@ -872,4 +964,79 @@ function UI.close_tx_gui(player)
   local f = player.gui.screen[M.GUI_TX_FRAME]
   if f and f.valid then f.destroy() end
 end
+
+-- =====================================
+-- Topbar Buttons (nach Vorbild change_ledger)
+-- =====================================
+
+function UI.build_topbar(player)
+  if not (player and player.valid) then return end
+  
+  local button_flow = mod_gui.get_button_flow(player)
+  
+  -- Alte Topbar-Buttons entfernen, falls vorhanden
+  local old_root = button_flow[M.TOPBAR_ROOT]
+  if old_root and old_root.valid then
+    old_root.destroy()
+  end
+
+  -- Frame für unsere Buttons (wie im change_ledger)
+  local frame = button_flow.add{
+    type = "frame",
+    name = M.TOPBAR_ROOT,
+    direction = "horizontal",
+    style = "slot_button_deep_frame"
+  }
+
+  -- Flow für die Buttons
+  local flow = frame.add{
+    type = "flow",
+    direction = "horizontal"
+  }
+  flow.style.horizontal_spacing = 0
+
+  -- Button 1: Einfacher Button (nur zum Klicken)
+  flow.add{
+    type = "sprite-button",
+    name = M.TOPBAR_BTN1,
+    sprite = M.TOPBAR_BTN1_SPRITE,
+    tooltip = M.TOPBAR_BTN1_TOOLTIP,
+    style = "slot_button"
+  }
+
+  -- Button 2: Toggle-Button (holt State aus storage)
+  local toggle2_state = storage and storage[M.STORAGE_TOGGLE2_STATE] or false
+  local toggle2_sprite = toggle2_state and M.TOPBAR_BTN2_ON_SPRITE or M.TOPBAR_BTN2_OFF_SPRITE
+  
+  flow.add{
+    type = "sprite-button",
+    name = M.TOPBAR_BTN2,
+    sprite = toggle2_sprite,
+    tooltip = M.TOPBAR_BTN2_TOOLTIP,
+    style = "slot_button"
+  }
+
+  -- Button 3: Toggle-Button (holt State aus storage)
+  local toggle3_state = storage and storage[M.STORAGE_TOGGLE3_STATE] or false
+  local toggle3_sprite = toggle3_state and M.TOPBAR_BTN3_ON_SPRITE or M.TOPBAR_BTN3_OFF_SPRITE
+  
+  flow.add{
+    type = "sprite-button",
+    name = M.TOPBAR_BTN3,
+    sprite = toggle3_sprite,
+    tooltip = M.TOPBAR_BTN3_TOOLTIP,
+    style = "slot_button"
+  }
+end
+
+-- Helper: Alle Topbars neu aufbauen (nach Load/Init)
+function UI.rebuild_all_topbars()
+  for _, player in pairs(game.players) do
+    UI.build_topbar(player)
+  end
+end
+
+
+
+
 return UI

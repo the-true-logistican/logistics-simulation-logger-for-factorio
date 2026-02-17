@@ -11,6 +11,7 @@
 --               bug in ensure_storage_defaults starting new games
 -- Version 0.8.5 bug in ensure_storage_defaults Migration safety for older saves
 -- Version 0.8.6 Reset clears players inventory too
+--               Simple Days-Time-Clock
 --
 -- =========================================
 
@@ -35,6 +36,7 @@ M.TX_MAX_EVENTS = 50000     -- max number of transaction records kept in memory
 M.POWER_SAMPLES = 5             -- ~1.0s (5 * 0.2s)  
 M.POLLUTION_SAMPLES = 5         -- ~1.0s (5 * 0.2s)
 M.GUI_REFRESH_TICKS = 10        -- throttle GUI refresh (ticks)
+M.CLOCk_INTERVAL_TICKS = 17     -- refresh for clock ~1 min
 M.CLEANUP_INTERVAL_TICKS = 600  -- 10 seconds - cleanup disconnected players
 M.TEXT_MAX = 1500000
 M.CHUNK_SIZE = 32 
@@ -175,6 +177,28 @@ M.GUI_EXPORT_FILENAME = "logsim_export_filename"
 -- Export configuration
 M.EXPORT_FOLDER = "logsim-exports"
 M.EXPORT_DEFAULT_NAME = "protocol"
+
+M.TOPBAR_ROOT = "ls_topbar_root"
+
+M.TOPBAR_BTN1 = "ls_topbar_btn1"
+M.TOPBAR_BTN2 = "ls_topbar_btn2"
+M.TOPBAR_BTN3 = "ls_topbar_btn3"
+
+-- Sprite-Namen für die Buttons
+M.TOPBAR_BTN1_SPRITE = "ls_button1_icon"
+M.TOPBAR_BTN2_ON_SPRITE = "ls_toggle_on_icon"
+M.TOPBAR_BTN2_OFF_SPRITE = "ls_toggle_off_icon"
+M.TOPBAR_BTN3_ON_SPRITE = "ls_toggle2_on_icon"
+M.TOPBAR_BTN3_OFF_SPRITE = "ls_toggle2_off_icon"
+
+-- Tooltips (Locale-Keys)
+M.TOPBAR_BTN1_TOOLTIP = {"logistics_simulation.topbar_btn1_tooltip"}
+M.TOPBAR_BTN2_TOOLTIP = {"logistics_simulation.topbar_btn2_tooltip"}
+M.TOPBAR_BTN3_TOOLTIP = {"logistics_simulation.topbar_btn3_tooltip"}
+
+-- Storage Keys für Toggle-States
+M.STORAGE_TOGGLE2_STATE = "ls_toggle2_state"
+M.STORAGE_TOGGLE3_STATE = "ls_toggle3_state"
 
 -- =====================================
 -- Item Aliases (for compact logging)
@@ -423,6 +447,10 @@ function M.ensure_storage_defaults(st)
     WIP  = {}, -- work in progress
     MAN  = {}, -- manual work
   }
+
+ -- NEU: Toggle-States für Topbar-Buttons
+  if st[M.STORAGE_TOGGLE2_STATE] == nil then st[M.STORAGE_TOGGLE2_STATE] = false end
+  if st[M.STORAGE_TOGGLE3_STATE] == nil then st[M.STORAGE_TOGGLE3_STATE] = false end
 
   return st
 end

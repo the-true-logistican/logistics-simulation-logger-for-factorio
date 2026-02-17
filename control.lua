@@ -28,6 +28,11 @@
 -- Version 0.8.5 manual transactions traced with mod "BIG Brother 1984"
 -- Version 0.8.6 periodic action moved to on_nth_tick
 --               Reset clears players inventory too
+--               Simple Days-Time-Clock
+-- Version 0.8.7 event_registry as general solution
+--               new topbar show, prot on/off, global power
+--               GUI-Handler vover to separate module
+--
 -- =========================================
 
 local DEBUG = true
@@ -43,10 +48,12 @@ local Blueprint = require("blueprint")
 local Export = require("export")
 local Transaction = require("transaction")
 local Util = require("utility")
+local GUI = require("gui_handlers")  -- NEU: Alle GUI-Handler
 
 local _needs_marker_refresh_after_load = false
+
+local Registry = require("event_registry")
 local PROVIDER_API = "logistics_events_api"
-local client_event_id = nil
 
 -- Forward declarations
 local debug_print
@@ -78,20 +85,27 @@ local function handle_logistics_event(event)
 --    end
 end
 
--- Funktion zur Registrierung des Events
-local function try_register_at_provider()
+-- Funktion zur Registrierung des Events beim Provider
+local function try_register_logistics_events()
     -- Prüfen, ob das Interface des Big Brother existiert
-    if remote.interfaces[PROVIDER_API] then
-        local event_id = remote.call(PROVIDER_API, "get_event_id")
-        
-        if event_id then
-            client_event_id = event_id
-            -- Das Event dynamisch abonnieren
-            script.on_event(client_event_id, handle_logistics_event)
-            game.print("[Logistics-Client] Erfolgreich beim Big Brother registriert. Event-ID: " .. tostring(event_id))
-        end
+    if not remote.interfaces[PROVIDER_API] then
+        return false
     end
+    
+    local event_id = remote.call(PROVIDER_API, "get_event_id")
+    if not event_id then
+        return false
+    end
+    
+    -- Registry komplett neu aufbauen und Event registrieren
+    event_registry = Registry.new()
+    event_registry:add(event_id, handle_logistics_event)
+    event_registry:bind()
+    
+    game.print("[Logistics-Client] Erfolgreich beim Big Brother registriert. Event-ID: " .. tostring(event_id))
+    return true
 end
+
 
 -- -----------------------------------------
 -- Helper Functions
@@ -278,11 +292,180 @@ local function on_runtime_mod_setting_changed(event)
 end
 
 -- -----------------------------------------
+-- Custom Inputs (Hotkeys)
+-- -----------------------------------------
+
+local function hotkey_toggle_buffer(event)
+  GUI.hotkey_toggle_buffer(event)  
+end
+
+-- NEW: Shift+R - if inserter is selected, allow activation ONLY if watched
+local function hotkey_register_chest(event)
+  local player = game.players[event.player_index]
+  if not (player and player.valid) then return end
+
+  local ent = player.selected
+
+  -- Inserter path: fully handled inside Transaction (messages included)
+  if Transaction and Transaction.handle_register_hotkey then
+    local handled = Transaction.handle_register_hotkey(player, ent)
+    if handled then return end
+  end
+
+  -- Default behavior (registry)
+  Chests.register_selected(player, Buffer.append_line)
+
+  -- After registering objects: refresh TX maps/watch immediately
+  if Transaction and Transaction.rebuild_object_map then
+    Transaction.rebuild_object_map()
+  end
+  if Transaction and Transaction.rebuild_watchlist then
+    Transaction.rebuild_watchlist()
+  end
+end
+
+local function hotkey_register_protect(event)
+  local player = game.players[event.player_index]
+  Chests.register_protect(player, Buffer.append_line)
+end
+
+-- NEW: Shift+U - if inserter is selected, clear active marking (back to yellow)
+local function hotkey_unregister_selected(event)
+  local player = game.players[event.player_index]
+  local ent = player.selected
+
+  if ent and ent.valid and ent.type == "inserter" and ent.unit_number then
+    if Transaction and Transaction.set_inserter_active then
+      Transaction.set_inserter_active(ent.unit_number, false)
+      player.print({"logistics_simulation.tx_inserter_marked_auto"})
+    end
+    return
+  end
+
+  -- default behavior
+  Chests.unregister_selected(player, Buffer.append_line)
+  -- after unregistering objects, refresh TX maps/watch immediately
+  if Transaction and Transaction.rebuild_object_map then
+    Transaction.rebuild_object_map()
+  end
+  if Transaction and Transaction.rebuild_watchlist then
+    Transaction.rebuild_watchlist()
+  end
+  
+end
+
+
+-- =====================================
+-- Topbar Button Handler mit Protokoll und Global Power
+-- =====================================
+
+-- Hilfsfunktion für Protocol Recording
+local function set_protocol_state(player, state)
+  if state then
+    storage.protocol_active = true
+    storage.tx_active = true
+    if player then
+      player.print({"logistics_simulation.cmd_prot_on"})
+    end
+  else
+    storage.protocol_active = false
+    storage.tx_active = false
+    if player then
+      player.print({"logistics_simulation.cmd_prot_off"})
+    end
+  end
+  
+  -- GUI aktualisieren (falls offen)
+  if player and player.gui.screen[M.GUI_BUFFER_FRAME] then
+    Buffer.refresh_for_player(player)
+  end
+end
+
+-- Hilfsfunktion für Global Power Network
+local function set_global_power_state(player, surface, state)
+  if not state then
+    storage.gp_enabled = true
+    surface.create_global_electric_network()
+    if player then
+      player.print({"logistics_simulation.cmd_gp_on"})
+    end
+  else
+    storage.gp_enabled = false
+    surface.destroy_global_electric_network()
+    if player then
+      player.print({"logistics_simulation.cmd_gp_off"})
+    end
+  end
+end
+
+-- Topbar Buttons aktualisieren (nach State-Änderungen)
+local function update_topbar_buttons()
+  for _, player in pairs(game.players) do
+    local button_flow = mod_gui.get_button_flow(player)
+    local root = button_flow[M.TOPBAR_ROOT]
+    if root and root.valid then
+      -- Button 2 (Protocol) aktualisieren
+      local btn2 = root[M.TOPBAR_BTN2]
+      if btn2 and btn2.valid then
+        local new_sprite = storage.protocol_active and M.TOPBAR_BTN2_ON_SPRITE or M.TOPBAR_BTN2_OFF_SPRITE
+        btn2.sprite = new_sprite
+      end
+      
+      -- Button 3 (Global Power) aktualisieren
+      local btn3 = root[M.TOPBAR_BTN3]
+      if btn3 and btn3.valid then
+        local new_sprite = storage.gp_enabled and M.TOPBAR_BTN3_ON_SPRITE or M.TOPBAR_BTN3_OFF_SPRITE
+        btn3.sprite = new_sprite
+      end
+    end
+  end
+end
+
+-- Topbar Click Handler
+local function handle_topbar_click(event, player, element)
+  local name = element.name
+  local surface = player.surface
+  
+  -- Button 1: Einfacher Klick (Buffer anzeigen)
+  if name == M.TOPBAR_BTN1 then
+    hotkey_toggle_buffer(event)
+    return
+  end
+  
+  -- Button 2: Protocol Recording Toggle
+  if name == M.TOPBAR_BTN2 then
+    local new_state = not (storage.protocol_active or false)
+    set_protocol_state(player, new_state)
+    
+    -- Sprite aktualisieren
+    local new_sprite = new_state and M.TOPBAR_BTN2_ON_SPRITE or M.TOPBAR_BTN2_OFF_SPRITE
+    element.sprite = new_sprite
+    
+    return
+  end
+  
+  -- Button 3: Global Power Network Toggle
+  if name == M.TOPBAR_BTN3 then
+    local new_state = not (storage.gp_enabled or false)
+    set_global_power_state(player, surface, new_state)
+    
+    -- Sprite aktualisieren
+    local new_sprite = new_state and M.TOPBAR_BTN3_ON_SPRITE or M.TOPBAR_BTN3_OFF_SPRITE
+    element.sprite = new_sprite
+    
+    return
+  end
+end
+
+-- -----------------------------------------
 -- Lifecycle Events
 -- -----------------------------------------
 
 script.on_init(function()
-  try_register_at_provider()
+    -- Setze Flag, dass wir beim nächsten Tick registrieren müssen
+    needs_registration = true
+    event_registry = Registry.new()
+
   init_storage()
   debug_print({"logistics_simulation.mod_initialised"})
   -- Transactions: build initial maps/watchlist (in-memory only)
@@ -293,10 +476,15 @@ script.on_init(function()
     Transaction.rebuild_watchlist()
   end
   maybe_prompt_runname_for_all_players()
+  UI.rebuild_all_topbars()
+  GUI.update_topbar_buttons()  -- States nach dem Bauen setzen
 end)
 
 script.on_configuration_changed(function(data)
-  try_register_at_provider()
+    -- Setze Flag, dass wir beim nächsten Tick registrieren müssen
+    needs_registration = true
+    event_registry = Registry.new()
+
   init_storage()
   local mod_changes = data.mod_changes and data.mod_changes["logistics_simulation"]
   if mod_changes then
@@ -314,10 +502,17 @@ script.on_configuration_changed(function(data)
     Transaction.rebuild_watchlist()
   end
   maybe_prompt_runname_for_all_players()
+  UI.rebuild_all_topbars()
+  GUI.update_topbar_buttons()  -- States nach dem Bauen setzen
 end)
 
 script.on_load(function()
+    -- Setze Flag, dass wir beim nächsten Tick registrieren müssen
+    needs_registration = true
+    event_registry = Registry.new()
+
   _needs_marker_refresh_after_load = true
+  _needs_UI_time_Window = true
 end)
 
 script.on_event(defines.events.on_runtime_mod_setting_changed, on_runtime_mod_setting_changed)
@@ -326,39 +521,35 @@ script.on_event(defines.events.on_runtime_mod_setting_changed, on_runtime_mod_se
 -- Commands
 -- -----------------------------------------
 
-commands.add_command("gp", "Global Power Network: /gp on | /gp off", function(event)
-  local player = game.players[event.player_index]
-  local arg = event.parameter
-
-  if arg == "on" then
-    storage.gp_enabled = true
-    player.surface.create_global_electric_network()
-    player.print({"logistics_simulation.cmd_gp_on"})
-  elseif arg == "off" then
-    storage.gp_enabled = false
-    player.surface.destroy_global_electric_network()
-    player.print({"logistics_simulation.cmd_gp_off"})
-  else
-    player.print({"logistics_simulation.cmd_gp_usage"})
-  end
-end)
-
+-- Befehl: /prot
 commands.add_command("prot", "Protocol Recording: /prot on | /prot off", function(event)
   local player = game.players[event.player_index]
   local arg = event.parameter
   
   if arg == "on" then
-    storage.protocol_active = true
-    storage.tx_active = true
-    player.print({"logistics_simulation.cmd_prot_on"})
+    GUI.set_protocol_state(player, true)  -- Jetzt über GUI
   elseif arg == "off" then
-    storage.protocol_active = false
-    storage.tx_active = false
-    player.print({"logistics_simulation.cmd_prot_off"})
+    GUI.set_protocol_state(player, false) -- Jetzt über GUI
   else
     player.print({"logistics_simulation.cmd_prot_usage"})
   end
 end)
+
+-- Befehl: /gp
+commands.add_command("gp", "Global Power Network: /gp on | /gp off", function(event)
+  local player = game.players[event.player_index]
+  local arg = event.parameter
+  local surface = player.surface
+
+  if arg == "on" then
+    GUI.set_global_power_state(player, surface, true)  -- Jetzt über GUI
+  elseif arg == "off" then
+    GUI.set_global_power_state(player, surface, false) -- Jetzt über GUI
+  else
+    player.print({"logistics_simulation.cmd_gp_usage"})
+  end
+end)
+
 
 commands.add_command("info", "Info Mode: /info on | /info off", function(event)
   local player = game.players[event.player_index]
@@ -519,10 +710,30 @@ script.on_event(defines.events.on_runtime_mod_setting_changed, function(e)
   end
 end)
 
-script.on_nth_tick(M.CLEANUP_INTERVAL_TICKS, function()
-  if not client_event_id then
-    try_register_at_provider()
+script.on_nth_tick(M.CLOCk_INTERVAL_TICKS, function()
+for _, player in pairs(game.players) do
+    -- Prüfen, ob der Spieler überhaupt im Spiel (valid) ist
+    if player.valid then
+      local tick = game.tick 
+      
+      -- Hol dir die Oberfläche direkt vom Spieler-Objekt
+      local surface = player.surface
+      
+      -- Jetzt kannst du die Oberfläche für deine Zeitberechnung nutzen
+      local zeit = Util.to_excel_daystime(tick, surface)
+      
+      UI.set_status_text(player, zeit)
+    end
   end
+end)
+
+script.on_nth_tick(M.CLEANUP_INTERVAL_TICKS, function()
+
+  if needs_registration then
+    needs_registration = false
+    try_register_logistics_events()
+  end
+
   Buffer.cleanup_disconnected_players()
   if Blueprint.cleanup_all_disconnected then
     Blueprint.cleanup_all_disconnected()
@@ -535,10 +746,23 @@ script.on_nth_tick(M.GUI_REFRESH_TICKS, function()
 end)
 
 script.on_event(defines.events.on_tick, function(event)
+  if needs_registration then
+    needs_registration = false
+    try_register_logistics_events()
+  end
+
   -- Transactions (in-memory): observe inserter movements every tick
   if Transaction and Transaction.on_tick then
     if storage.protocol_active then
       Transaction.on_tick(event.tick)
+    end
+  end
+
+  if _needs_UI_time_Window then
+    _needs_UI_time_Window = false
+    for _, player in pairs(game.players) do
+      UI.ensure_placeholder_frame(player)
+
     end
   end
 
@@ -593,77 +817,6 @@ script.on_event(defines.events.on_player_left_game, function(event)
 end)
 
 
--- -----------------------------------------
--- Custom Inputs (Hotkeys)
--- -----------------------------------------
-
-local function hotkey_toggle_buffer(event)
-  local player = game.players[event.player_index]
-  local frame = player.gui.screen.logsim_buffer
-
-  if frame and frame.valid then
-    frame.destroy()
-  else
-    UI.show_buffer_gui(player)
-    Buffer.refresh_for_player(player)
-  end
-end
-
--- NEW: Shift+R - if inserter is selected, allow activation ONLY if watched
-
-local function hotkey_register_chest(event)
-  local player = game.players[event.player_index]
-  if not (player and player.valid) then return end
-
-  local ent = player.selected
-
-  -- Inserter path: fully handled inside Transaction (messages included)
-  if Transaction and Transaction.handle_register_hotkey then
-    local handled = Transaction.handle_register_hotkey(player, ent)
-    if handled then return end
-  end
-
-  -- Default behavior (registry)
-  Chests.register_selected(player, Buffer.append_line)
-
-  -- After registering objects: refresh TX maps/watch immediately
-  if Transaction and Transaction.rebuild_object_map then
-    Transaction.rebuild_object_map()
-  end
-  if Transaction and Transaction.rebuild_watchlist then
-    Transaction.rebuild_watchlist()
-  end
-end
-
-local function hotkey_register_protect(event)
-  local player = game.players[event.player_index]
-  Chests.register_protect(player, Buffer.append_line)
-end
-
--- NEW: Shift+U - if inserter is selected, clear active marking (back to yellow)
-local function hotkey_unregister_selected(event)
-  local player = game.players[event.player_index]
-  local ent = player.selected
-
-  if ent and ent.valid and ent.type == "inserter" and ent.unit_number then
-    if Transaction and Transaction.set_inserter_active then
-      Transaction.set_inserter_active(ent.unit_number, false)
-      player.print({"logistics_simulation.tx_inserter_marked_auto"})
-    end
-    return
-  end
-
-  -- default behavior
-  Chests.unregister_selected(player, Buffer.append_line)
-  -- after unregistering objects, refresh TX maps/watch immediately
-  if Transaction and Transaction.rebuild_object_map then
-    Transaction.rebuild_object_map()
-  end
-  if Transaction and Transaction.rebuild_watchlist then
-    Transaction.rebuild_watchlist()
-  end
-  
-end
 
 script.on_event(
   {
@@ -687,345 +840,112 @@ script.on_event(
   end
 )
 
--- -----------------------------------------
--- GUI Click Handlers 
-
--- TX Window handlers
-local function click_tx_open(event)
-  local player = game.players[event.player_index]
-  UI.show_tx_gui(player)
-  if Transaction and Transaction.tx_refresh_for_player then
-    Transaction.tx_refresh_for_player(player)
-  else
-    -- fallback: mark dirty; refresh done on tick
-    storage.tx_gui_dirty = storage.tx_gui_dirty or {}
-    storage.tx_gui_dirty[player.index] = true
-  end
-end
-
-local function click_tx_hide(event)
-  local player = game.players[event.player_index]
-  UI.close_tx_gui(player)
-  UI.close_export_dialog_if_owner(player, "tx")
-end
-
-local function click_tx_older(event)
-  local player = game.players[event.player_index]
-  if Transaction and Transaction.tx_page_older then Transaction.tx_page_older(player) end
-end
-
-local function click_tx_newer(event)
-  local player = game.players[event.player_index]
-  if Transaction and Transaction.tx_page_newer then Transaction.tx_page_newer(player) end
-end
-
-local function click_tx_home(event)
-  local player = game.players[event.player_index]
-  if Transaction and Transaction.tx_home then Transaction.tx_home(player) end
-end
-
-local function click_tx_end(event)
-  local player = game.players[event.player_index]
-  if Transaction and Transaction.tx_end then Transaction.tx_end(player)
-  elseif Transaction and Transaction.tx_tail then Transaction.tx_tail(player) end
-end
-
-local function click_tx_copy(event)
-  local player = game.players[event.player_index]
-  if Transaction and Transaction.tx_copy_to_clipboard then Transaction.tx_copy_to_clipboard(player) end
-end
--- -----------------------------------------
-
-local function click_buffer_export(event)
-  local player = game.players[event.player_index]
-  storage.export_mode = "buffer"
-  UI.show_export_dialog(player)
-end
-
-local function click_tx_export(event)
-  local player = game.players[event.player_index]
-  storage.export_mode = "tx"
-  UI.show_export_dialog(player)
-end
-
-local function click_inv_export(event)
-  local player = game.players[event.player_index]
-  storage.export_mode = "inv"
-  UI.show_export_dialog(player)
-end
-
-
-local function click_export_csv(event)
-  local player = game.players[event.player_index]
-  if storage.export_mode == "tx" then
-    Export.export_tx_csv(player)
-  elseif storage.export_mode == "inv" then
-    Export.export_inv_csv(player)
-  else
-    Export.export_csv(player) -- buffer/protocol
-  end
-end
-
-local function click_export_json(event)
-  local player = game.players[event.player_index]
-  if storage.export_mode == "tx" then
-    Export.export_tx_json(player)
-  elseif storage.export_mode == "inv" then
-    Export.export_inv_json(player)
-  else
-    Export.export_json(player) -- buffer/protocol
-  end
-end
-
-local function click_export_close(event)
-  local player = game.players[event.player_index]
-  UI.close_export_dialog(player)
-end
-
-local function click_runname_ok(event)
-  local player = game.players[event.player_index]
-  handle_runname_submit(player)
-end
-
-local function click_hide_or_close(event)
-  local player = game.players[event.player_index]
-
-  local frame = player.gui.screen.logsim_buffer
-  if frame and frame.valid then frame.destroy() end
-
-  local hf = player.gui.screen[M.GUI_HELP_FRAME]
-  if hf and hf.valid then hf.destroy() end
-  UI.close_export_dialog_if_owner(player, "buffer")
-end
-
-local function click_reset_open(event)
-  local player = game.players[event.player_index]
-  UI.show_reset_dialog(player)
-end
-
-local function click_reset_cancel(event)
-  local player = game.players[event.player_index]
-  UI.close_reset_dialog(player)
-end
-
-local function click_reset_ok(event)
-  local player = game.players[event.player_index]
-
-  local opts = UI.read_reset_dialog(player)
-  UI.close_reset_dialog(player)
-  if not opts then return end
-
-  if opts.del_items then
-    R.do_reset_simulation(player.surface, player.force, Buffer.append_line, opts.del_stats)
-  end
-
-  if opts.del_playerinv then
-    -- Wipe all player inventories (MP-safe)
-    R.wipe_all_player_inventories(game.players)
-  end
-
-  if opts.del_chests or opts.del_machines or opts.del_prot then
-    Chests.reset_lists{
-      chests = opts.del_chests,
-      machines = opts.del_machines,
-      protected = opts.del_prot
-    }
-  end
-
-if opts.del_log then
-  storage.buffer_lines = {}
-  storage.perline_counter = 0
-  storage.buffer_view = {}
-  storage.gui_dirty = {}
-
-  -- >>> FIX: Ringpuffer-State ebenfalls resetten
-  storage.buffer_head = 1
-  storage.buffer_size = 0
-  storage._buffer_last_max = nil
-  -- <<<
-
-  storage.run_start_tick = game.tick
-
-  if Transaction and Transaction.reset_tx_log then
-    Transaction.reset_tx_log()
-  end
-
-  local header = SimLog.build_header{
-    mod_name = storage.mod_name,
-    mod_version = storage.mod_version,
-    run_name = storage.run_name or "",
-    start_tick = storage.run_start_tick
-  }
-  Buffer.append_multiline(header)
-end
-
-  if opts.new_name and opts.new_name ~= "" then
-    storage.run_name = opts.new_name
-  end
-
-  Buffer.refresh_for_player(player)
-end
-
-local function click_buffer_nav(event, element)
-  local player = game.players[event.player_index]
-  local n = Buffer.count()
-  if n == 0 then
-    Buffer.refresh_for_player(player)
-    return
-  end
-
-  local view = storage.buffer_view[player.index]
-  if not view then
-    local s, e = Buffer.compute_tail_window(M.TEXT_MAX)
-    view = { start_line = s, end_line = e, follow = true }
-    storage.buffer_view[player.index] = view
-  end
-
-  if element.name == M.GUI_BTN_TAIL and not storage.protocol_active then
-    view.follow = false
-    player.print({"logistics_simulation.protocol_off_static_mode"})
-    Buffer.refresh_for_player(player)
-    return
-  end
-
-  if element.name == M.GUI_BTN_TAIL then
-    view.follow = true
-    Buffer.refresh_for_player(player)
-    return
-  end
-
-  local win  = math.max(1, (view.end_line - view.start_line + 1))
-  local page = math.max(M.BUFFER_PAGE_LINES, win)
-
-  if element.name == M.GUI_BTN_OLDER then
-    view.follow = false
-
-    local new_end = math.max(1, view.start_line - 1)
-    local new_start = math.max(1, new_end - (page - 1))
-
-    new_start, new_end = Buffer.fit_window_to_chars(new_end, M.TEXT_MAX)
-    view.start_line, view.end_line = new_start, new_end
-
-  else
-    view.follow = false
-
-    local new_start = math.min(n, view.end_line + 1)
-    local end_limit = math.min(n, new_start + (page - 1))
-
-    local s, e = Buffer.fit_window_forward_to_chars(new_start, end_limit, M.TEXT_MAX)
-    view.start_line, view.end_line = s, e
-  end
-
-  Buffer.refresh_for_player(player)
-end
-
-local function click_copy(event)
-  local player = game.players[event.player_index]
-  local frame = player.gui.screen.logsim_buffer
-  if not (frame and frame.valid) then return end
-
-  local box = frame.logsim_buffer_box
-  if not (box and box.valid) then return end
-
-  box.focus()
-  box.select_all()
-  player.print({"logistics_simulation.msg_copied"})
-end
-
-local function click_help_toggle(event)
-  local player = game.players[event.player_index]
-  local hf = player.gui.screen[M.GUI_HELP_FRAME]
-  if hf and hf.valid then
-    hf.destroy()
-  else
-    UI.show_help_gui(player)
-  end
-end
-
-local function click_help_close(event)
-  local player = game.players[event.player_index]
-  local hf = player.gui.screen[M.GUI_HELP_FRAME]
-  if hf and hf.valid then hf.destroy() end
-end
-
--- Blueprint inventory extraction with cost calculation - MOVED TO blueprint.lua
--- See Blueprint.click_bp_extract()
-
-local function click_invwin_copy(event)
-  local player = game.players[event.player_index]
-  local frame = player.gui.screen["logsim_invwin"]
-  if not (frame and frame.valid) then return end
-  
-  local box = frame["logsim_invwin_box"]
-  if not (box and box.valid) then return end
-  
-  box.focus()
-  box.select_all()
-  player.print({"logistics_simulation.msg_copied"})
-end
-
-local function click_invwin_close(event)
-  local player = game.players[event.player_index]
-  UI.close_inventory_window(player)
-  UI.close_export_dialog_if_owner(player, "inv")
-end
+-- =========================================
+-- GUI Click Handlers (JETZT SEHR SCHLANK)
+-- =========================================
 
 script.on_event(defines.events.on_gui_click, function(event)
+
+  local player = game.get_player(event.player_index)
+  if not player then return end
+
   local element = event.element
   if not (element and element.valid) then return end
+    
+  -- Zuerst prüfen, ob es einer unserer Topbar-Buttons ist
+  if element.name == M.TOPBAR_BTN1 or 
+     element.name == M.TOPBAR_BTN2 or 
+     element.name == M.TOPBAR_BTN3 then
+    GUI.handle_topbar_click(event, player, element)  -- Jetzt über GUI
+    return
+  end
+
   local name = element.name
 
+  -- Run Name Dialog
   if name == "logsim_runname_ok" then
-    click_runname_ok(event)
+    GUI.click_runname_ok(event)
+  
+  -- Buffer/TX/Help Windows  
   elseif name == M.GUI_BTN_HIDE or name == M.GUI_CLOSE then
-    click_hide_or_close(event)
+    GUI.click_hide_or_close(event)
   elseif name == M.GUI_BTN_RESET then
-    click_reset_open(event)
+    GUI.click_reset_open(event)
   elseif name == M.GUI_RESET_CANCEL then
-    click_reset_cancel(event)
+    GUI.click_reset_cancel(event)
   elseif name == M.GUI_RESET_OK then
-    click_reset_ok(event)
+    GUI.click_reset_ok(event)
   elseif name == M.GUI_BTN_OLDER or name == M.GUI_BTN_TAIL or name == M.GUI_BTN_NEWER then
-    click_buffer_nav(event, element)
+    GUI.click_buffer_nav(event, element)
   elseif name == M.GUI_BTN_COPY then
-    click_copy(event)
+    GUI.click_copy(event)
   elseif name == M.GUI_BTN_HELP then
-    click_help_toggle(event)
+    GUI.click_help_toggle(event)
   elseif name == M.GUI_HELP_CLOSE then
-    click_help_close(event)
+    GUI.click_help_close(event)
   elseif name == M.GUI_BP_EXTRACTBTN then
     Blueprint.click_bp_extract(event)
+  
+  -- Inventory Window
   elseif name == "logsim_invwin_copy" then
-    click_invwin_copy(event)
+    GUI.click_invwin_copy(event)
   elseif name == "logsim_invwin_close" or name == "logsim_invwin_close_x" then
-    click_invwin_close(event)
+    GUI.click_invwin_close(event)
+  
+  -- TX Window
   elseif name == M.GUI_BTN_TX_OPEN then
-    click_tx_open(event)
+    GUI.click_tx_open(event)
   elseif name == M.GUI_TX_CLOSE or name == M.GUI_TX_BTN_HIDE then
-    click_tx_hide(event)
+    GUI.click_tx_hide(event)
   elseif name == M.GUI_TX_BTN_OLDER then
-    click_tx_older(event)
+    GUI.click_tx_older(event)
   elseif name == M.GUI_TX_BTN_HOME then
-    click_tx_home(event)
+    GUI.click_tx_home(event)
   elseif name == M.GUI_TX_BTN_END then
-    click_tx_end(event)
+    GUI.click_tx_end(event)
   elseif name == M.GUI_TX_BTN_NEWER then
-    click_tx_newer(event)
+    GUI.click_tx_newer(event)
   elseif name == M.GUI_TX_BTN_COPY then
-    click_tx_copy(event)	
+    GUI.click_tx_copy(event)
+  
+  -- Export Dialog  
   elseif name == M.GUI_BTN_EXPORT then
-    click_buffer_export(event)
+    GUI.click_buffer_export(event)
   elseif name == M.GUI_TX_BTN_EXPORT then
-    click_tx_export(event)
+    GUI.click_tx_export(event)
   elseif name == M.GUI_INV_BTN_EXPORT then
-    click_inv_export(event)
+    GUI.click_inv_export(event)
   elseif name == M.GUI_BTN_EXPORT_CSV then
-    click_export_csv(event)
+    GUI.click_export_csv(event)
   elseif name == M.GUI_BTN_EXPORT_JSON then
-    click_export_json(event)
+    GUI.click_export_json(event)
   elseif name == M.GUI_EXPORT_CLOSE then
-    click_export_close(event)
+    GUI.click_export_close(event)
   end 
+end)
+
+
+
+
+
+script.on_event(defines.events.on_player_created, function(e)
+  local player = game.get_player(e.player_index)
+  if player then
+    UI.build_topbar(player)
+    -- Nach dem Bauen die korrekten Sprites setzen
+    local button_flow = mod_gui.get_button_flow(player)
+    local root = button_flow[M.TOPBAR_ROOT]
+    if root and root.valid then
+      local btn2 = root[M.TOPBAR_BTN2]
+      if btn2 and btn2.valid then
+        btn2.sprite = storage.protocol_active and M.TOPBAR_BTN2_ON_SPRITE or M.TOPBAR_BTN2_OFF_SPRITE
+      end
+      local btn3 = root[M.TOPBAR_BTN3]
+      if btn3 and btn3.valid then
+        btn3.sprite = storage.gp_enabled and M.TOPBAR_BTN3_ON_SPRITE or M.TOPBAR_BTN3_OFF_SPRITE
+      end
+    end
+  end
 end)
 
 
