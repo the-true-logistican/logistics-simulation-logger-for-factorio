@@ -195,5 +195,24 @@ function Util.sanitize_filename(s)
   return (tostring(s):gsub("[^%w%._%-]", "_"))
 end
 
+-- =========================================
+-- GUI: Bring a screen frame to the front
+-- =========================================
+-- Call this in every show_*() function so that re-opening an already open
+-- window always raises it on top instead of silently doing nothing.
+-- Usage:
+--   local existing = player.gui.screen[FRAME_NAME]
+--   if existing and existing.valid then
+--     Util.bring_to_front(existing)
+--     return
+--   end
+--   ... create frame ...
+--   Util.bring_to_front(frame)   -- also raise on first open
+function Util.bring_to_front(frame)
+  if frame and frame.valid and frame.bring_to_front then
+    frame.bring_to_front()
+  end
+end
+
 
 return Util

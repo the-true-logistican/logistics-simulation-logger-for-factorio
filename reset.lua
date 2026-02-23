@@ -4,13 +4,14 @@
 --
 -- version 0.8.0 first complete working version
 -- version 0.8.1 Reset clears players inventory too
+-- version 0.8.2 Reset clears roboports (robots + repair mats) + destroys flying bots
 --
 -- =========================================
 
 local M = require("config")
 
 local R = {}
-R.version = "0.8.1"
+R.version = "0.8.2"
 
 -- FIX: Added validity check for power switches
 local function set_factory_power(surface, state)
@@ -266,6 +267,75 @@ local function reset_statistics(surface, force, log)
   return stats_reset
 end
 
+-- =========================================
+-- Reset Roboports: clear robots + repair materials (v0.8.2)
+-- Skips protected roboports.
+-- Robots that are currently flying/active are destroyed as ground items would be.
+-- =========================================
+local function reset_clear_roboports(surface, force, log)
+  local cleared_ports   = 0  -- roboports touched
+  local skipped         = 0  -- protected
+  local cleared_robots  = 0  -- robot items removed from storage
+  local cleared_mats    = 0  -- repair-pack / material items removed
+  local destroyed_bots  = 0  -- active robots in the air, forcibly destroyed
+
+  local roboports = surface.find_entities_filtered{
+    force = force,
+    type  = "roboport"
+  }
+
+  for _, rp in ipairs(roboports) do
+    if not rp.valid then goto continue end
+
+    if is_protected(rp) then
+      skipped = skipped + 1
+      goto continue
+    end
+
+    -- 1) Robot storage inventory  (defines.inventory.roboport_robot)
+    local inv_robot = rp.get_inventory(defines.inventory.roboport_robot)
+    if inv_robot and inv_robot.valid then
+      local before = #inv_robot
+      inv_robot.clear()
+      cleared_robots = cleared_robots + before
+    end
+
+    -- 2) Material / repair-pack inventory  (defines.inventory.roboport_material)
+    local inv_mat = rp.get_inventory(defines.inventory.roboport_material)
+    if inv_mat and inv_mat.valid then
+      local before = #inv_mat
+      inv_mat.clear()
+      cleared_mats = cleared_mats + before
+    end
+
+    cleared_ports = cleared_ports + 1
+
+    ::continue::
+  end
+
+  -- 3) Destroy any robots still flying in the air (not in a roboport)
+  --    They would otherwise land back and re-populate roboports.
+  local flying_types = { "logistic-robot", "construction-robot" }
+  for _, rtype in ipairs(flying_types) do
+    local bots = surface.find_entities_filtered{ force = force, type = rtype }
+    for _, bot in ipairs(bots) do
+      if bot.valid then
+        bot.destroy()
+        destroyed_bots = destroyed_bots + 1
+      end
+    end
+  end
+
+  if log then
+    log(string.format(
+      "EV;%d;RESET_ROBOPORTS;ports=%d;skipped_protected=%d;robots_cleared=%d;mats_cleared=%d;bots_destroyed=%d",
+      game.tick, cleared_ports, skipped, cleared_robots, cleared_mats, destroyed_bots
+    ))
+  end
+
+  return cleared_ports, skipped, cleared_robots, cleared_mats, destroyed_bots
+end
+
 -- Exported function (updated signature for v0.5.3)
 function R.do_reset_simulation(surface, force, log, reset_stats)
   set_factory_power(surface, false)
@@ -280,6 +350,8 @@ function R.do_reset_simulation(surface, force, log, reset_stats)
   local cleared_belts, cleared_lines = reset_clear_belts(surface, force)
   local cleared_hands = reset_clear_inserter_hands(surface, force)
   local pol_chunks, pol_removed = reset_clear_pollution(surface)
+  local cleared_ports, skipped_ports, cleared_robots, cleared_mats, destroyed_bots =
+    reset_clear_roboports(surface, force, log)
   
   -- NEW: Reset statistics if requested (v0.5.3)
   local stats_cleared = 0
@@ -289,9 +361,9 @@ function R.do_reset_simulation(surface, force, log, reset_stats)
 
   if log then
     log(string.format(
-      "EV;%d;RESET_DONE;chests=%d;skipped_protected=%d;ground=%d;machines=%d;entities=%d;lines=%d;inserters=%d;pol_chunks=%d;pol_removed=%.2f;stats=%d",
+      "EV;%d;RESET_DONE;chests=%d;skipped_protected=%d;ground=%d;machines=%d;entities=%d;lines=%d;inserters=%d;pol_chunks=%d;pol_removed=%.2f;roboports=%d;roboports_skipped=%d;robots=%d;repair_mats=%d;bots_destroyed=%d;stats=%d",
       game.tick, cleared_chests, skipped, ground, cleared_machines, cleared_belts, cleared_lines, cleared_hands,
-      pol_chunks, pol_removed, stats_cleared
+      pol_chunks, pol_removed, cleared_ports, skipped_ports, cleared_robots, cleared_mats, destroyed_bots, stats_cleared
     ))
   end
   

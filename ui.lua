@@ -9,10 +9,13 @@
 -- version 0.8.3 filter for manual transaction of the player
 -- version 0.8.4 Reset clears players inventory too
 --               Simple Days-Time-Clock
+--               new topbar show, prot on/off, global power
+--               show_xxxx if exists then bring_to_front + return
 --
 -- =========================================
 
 local M = require("config")
+local Util = require("utility")
 local mod_gui = require("mod-gui")
 
 local UI = {}
@@ -240,7 +243,11 @@ end
 -- =======================
 
 function UI.show_runname_gui(player)
-  if player.gui.screen.logsim_runname then return end
+  local existing = player.gui.screen.logsim_runname
+  if existing and existing.valid then
+    Util.bring_to_front(existing)
+    return
+  end
 
   local frame = player.gui.screen.add{
     type = "frame",
@@ -264,7 +271,8 @@ function UI.show_runname_gui(player)
     type = "button",
     name = "logsim_runname_ok",
     caption = {"logistics_simulation.reset_ok"}
-  }  
+  }
+  Util.bring_to_front(frame)
 end
 
 local function add_titlebar(frame, caption, close_name)
@@ -287,7 +295,11 @@ local function add_titlebar(frame, caption, close_name)
 end
 
 function UI.show_buffer_gui(player)
-  if player.gui.screen.logsim_buffer then return end
+  local existing = player.gui.screen.logsim_buffer
+  if existing and existing.valid then
+    Util.bring_to_front(existing)
+    return
+  end
 
   local frame = player.gui.screen.add{
     type = "frame",
@@ -379,6 +391,7 @@ top.add{
   
   storage.buffer_view = storage.buffer_view or {}
   storage.buffer_view[player.index] = { start_line = 1, end_line = 0, follow = true }
+  Util.bring_to_front(frame)
 end
 
 function UI.show_export_dialog(player)
@@ -399,7 +412,7 @@ function UI.show_export_dialog(player)
   local existing = player.gui.screen[M.GUI_EXPORT_FRAME]
   if existing and existing.valid then
     existing.caption = export_mode_caption(mode)
-    if existing.bring_to_front then existing.bring_to_front() end
+    Util.bring_to_front(existing)
 
     if storage then
       storage.export_owner = storage.export_owner or {}
@@ -510,6 +523,7 @@ function UI.show_export_dialog(player)
     name = M.GUI_EXPORT_CLOSE,
     caption = {"logistics_simulation.export_cancel"}
   }
+  Util.bring_to_front(frame)
 end
 
 function UI.close_export_dialog(player)
@@ -529,7 +543,11 @@ function UI.close_export_dialog_if_owner(player, owner)
 end
 
 function UI.show_help_gui(player)
-  if player.gui.screen[M.GUI_HELP_FRAME] then return end
+  local existing = player.gui.screen[M.GUI_HELP_FRAME]
+  if existing and existing.valid then
+    Util.bring_to_front(existing)
+    return
+  end
 
   local frame = player.gui.screen.add{
     type = "frame",
@@ -550,10 +568,15 @@ function UI.show_help_gui(player)
   }
   lbl.style.single_line = false
   lbl.style.maximal_width = M.GUI_HELP_LABEL_WIDTH
+  Util.bring_to_front(frame)
 end
 
 function UI.show_reset_dialog(player)
-  if player.gui.screen[M.GUI_RESET_FRAME] then return end
+  local existing = player.gui.screen[M.GUI_RESET_FRAME]
+  if existing and existing.valid then
+    Util.bring_to_front(existing)
+    return
+  end
 
   local frame = player.gui.screen.add{
     type = "frame",
@@ -657,6 +680,7 @@ function UI.show_reset_dialog(player)
     name = M.GUI_RESET_OK, 
     caption = {"logistics_simulation.reset_ok"}
   }
+  Util.bring_to_front(frame)
 end
 
 function UI.close_reset_dialog(player)
@@ -761,7 +785,7 @@ function UI.show_inventory_window(player, text)
   if frame and frame.valid then
     local box = frame[M.GUI_INV_BOX]
     if box and box.valid then box.text = text or "" end
-    frame.bring_to_front()
+    Util.bring_to_front(frame)
     return
   end
 
@@ -813,6 +837,7 @@ function UI.show_inventory_window(player, text)
   -- Größe: nimm die Buffer-Dimensionen
   box.style.width  = M.GUI_BUFFER_WIDTH
   box.style.height = M.GUI_BUFFER_HEIGHT
+  Util.bring_to_front(frame)
 end
 
 function UI.close_inventory_window(player)
@@ -828,7 +853,11 @@ end
 -- -----------------------------------------
 
 function UI.show_tx_gui(player)
-  if player.gui.screen[M.GUI_TX_FRAME] then return end
+  local existing = player.gui.screen[M.GUI_TX_FRAME]
+  if existing and existing.valid then
+    Util.bring_to_front(existing)
+    return
+  end
 
   local frame = player.gui.screen.add{
     type = "frame",
@@ -958,6 +987,7 @@ function UI.show_tx_gui(player)
   box.word_wrap = false
   box.style.width = M.GUI_BUFFER_WIDTH
   box.style.height = M.GUI_BUFFER_HEIGHT
+  Util.bring_to_front(frame)
 end
 
 function UI.close_tx_gui(player)

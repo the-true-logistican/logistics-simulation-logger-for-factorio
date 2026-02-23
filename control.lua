@@ -24,14 +24,16 @@
 -- Version 0.8.2 get global parameters from settings
 -- Version 0.8.3 new virtal location WIP / settings added
 -- Version 0.8.4 close export Dialog, if owner ist closed
---                 Blueprint.ui_front_tick_handler()
+--               Blueprint.ui_front_tick_handler()
 -- Version 0.8.5 manual transactions traced with mod "BIG Brother 1984"
 -- Version 0.8.6 periodic action moved to on_nth_tick
 --               Reset clears players inventory too
 --               Simple Days-Time-Clock
 -- Version 0.8.7 event_registry as general solution
 --               new topbar show, prot on/off, global power
---               GUI-Handler vover to separate module
+--               GUI-Handler moved to separate module
+-- Version 0.8.8 show_xxxx if exists then bring_to_front + return
+--               Reset clears roboports (robots + repair mats) + destroys flying bots
 --
 -- =========================================
 

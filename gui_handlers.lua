@@ -14,6 +14,7 @@ local Chests = require("chests")
 local Blueprint = require("blueprint")
 local Export = require("export")
 local Transaction = require("transaction")
+local SimLog = require("simlog")
 local mod_gui = require("mod-gui")  -- WICHTIG: für update_topbar_buttons
 
 local GUI = {}
