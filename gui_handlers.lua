@@ -15,12 +15,10 @@ local Blueprint = require("blueprint")
 local Export = require("export")
 local Transaction = require("transaction")
 local SimLog = require("simlog")
-local mod_gui = require("mod-gui")  -- WICHTIG: für update_topbar_buttons
+local mod_gui = require("mod-gui")  
 
 local GUI = {}
 GUI.version = "0.8.7"
-
-
 
 
 -- =========================================
@@ -247,10 +245,37 @@ end
 
 function GUI.click_runname_ok(event)
   local player = game.players[event.player_index]
-  -- Diese Funktion kommt aus control.lua (forward declaration)
-  if handle_runname_submit then
-    handle_runname_submit(player)
+
+  local frame = player.gui.screen.logsim_runname
+  if not (frame and frame.valid) then return end
+
+  local name = frame.logsim_runname_text.text
+  if name == "" then
+    player.print({"logistics_simulation.get_sim_name"})
+    return
   end
+
+  storage.run_name = name
+  storage.run_start_tick = storage.run_start_tick or game.tick
+
+  if not storage.buffer_lines or #storage.buffer_lines == 0 then
+    storage.buffer_lines = {}
+    local header = SimLog.build_header{
+      run_name   = storage.run_name,
+      start_tick = storage.run_start_tick,
+      surface    = player.surface and player.surface.name or nil,
+      force      = player.force and player.force.name or nil
+    }
+    Buffer.append_multiline(header)
+  end
+
+  player.print({"logistics_simulation.show_prot_name", storage.run_name})
+  player.print({"logistics_simulation.show_start_tick", tostring(storage.run_start_tick)})
+
+  frame.destroy()
+
+  UI.show_buffer_gui(player)
+  Buffer.refresh_for_player(player)
 end
 
 -- =========================================

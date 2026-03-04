@@ -50,6 +50,7 @@ local Blueprint = require("blueprint")
 local Export = require("export")
 local Transaction = require("transaction")
 local Util = require("utility")
+local mod_gui = require("mod-gui")
 local GUI = require("gui_handlers")  -- NEU: Alle GUI-Handler
 
 local _needs_marker_refresh_after_load = false
@@ -61,7 +62,6 @@ local PROVIDER_API = "logistics_events_api"
 local debug_print
 local ensure_storage_defaults
 local maybe_prompt_runname_for_all_players
-local handle_runname_submit
 local resolve_entity
 local cleanup_entity_from_registries
 local clear_invalid_rendering_objects
@@ -125,38 +125,6 @@ resolve_entity = function(rec)
   return (found and found[1]) or nil
 end
 
-handle_runname_submit = function(player)
-  local frame = player.gui.screen.logsim_runname
-  if not frame or not frame.valid then return end
-
-  local name = frame.logsim_runname_text.text
-  if name == "" then
-    player.print({"logistics_simulation.get_sim_name"})
-    return
-  end
-
-  storage.run_name = name
-  storage.run_start_tick = storage.run_start_tick or game.tick
-
-  if not storage.buffer_lines or #storage.buffer_lines == 0 then
-    storage.buffer_lines = {}
-    local header = SimLog.build_header{
-      run_name   = storage.run_name,
-      start_tick = storage.run_start_tick,
-      surface    = player.surface and player.surface.name or nil,
-      force      = player.force and player.force.name or nil
-    }
-    Buffer.append_multiline(header)
-  end
-
-  player.print({"logistics_simulation.show_prot_name", storage.run_name})
-  player.print({"logistics_simulation.show_start_tick", tostring(storage.run_start_tick)})
-
-  frame.destroy()
-
-  UI.show_buffer_gui(player)
-  Buffer.refresh_for_player(player)
-end
 
 debug_print = function(msg)
   if DEBUG then
