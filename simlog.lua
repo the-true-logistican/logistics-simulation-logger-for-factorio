@@ -4,6 +4,7 @@
 -- Builds protocol log strings from live factory state (power, pollution, machines, inventories).
 --
 -- Version 0.8.1 introduce WIP (work in progress)
+-- Version 0.8.2 format_factory_stats: scenario, mods, power (3 windows), pollution (3 windows)
 --
 -- =========================================
 
@@ -15,7 +16,7 @@ local Chests = require("chests")
 local Util = require("utility")
 
 local SimLog = {}
-SimLog.version = "0.8.1"
+SimLog.version = "0.8.2"
 
 SimLog.MACHINE_STATE = {
   RUN       = "RUN",
@@ -123,6 +124,226 @@ function SimLog.get_power_w_1s(surface)
   
   return sum_samples / samples
 end
+
+-- =========================================
+-- FACTORY STATS (für Blueprint-Analyse, Teil 3)
+-- Einheitliche Tabelle: POWER / POLLUTION / ITEM / FLUID
+-- Basis: 10-Minuten-Fenster, sample_index=1 (aktuellster 10-min-Bucket)
+-- =========================================
+
+local P10 = defines.flow_precision_index.ten_minutes
+
+-- Formatiert Watt menschenlesbar
+local function fmt_watts(w)
+  if not w or w ~= w then return "NA" end
+  w = tonumber(w) or 0
+  if     w >= 1e9 then return string.format("%.2f GW", w / 1e9)
+  elseif w >= 1e6 then return string.format("%.2f MW", w / 1e6)
+  elseif w >= 1e3 then return string.format("%.2f kW", w / 1e3)
+  else                 return string.format("%.0f W",  w)
+  end
+end
+
+-- Items, Fluids, Pollution: get_flow_count liefert bereits /min (API-normalisiert).
+-- Kein Faktor nötig.
+local function safe_flow(stats, name, category)
+  local ok, v = pcall(function()
+    return stats.get_flow_count{
+      name            = name,
+      category        = category,
+      precision_index = P10
+    }
+  end)
+  return (ok and v) and v or 0
+end
+
+-- Power (electric networks): get_flow_count liefert /tick → × 60 = Watt.
+local function safe_flow_power(stats, name, category)
+  local ok, v = pcall(function()
+    return stats.get_flow_count{
+      name            = name,
+      category        = category,
+      precision_index = P10
+    }
+  end)
+  return ((ok and v) and v or 0) * 60
+end
+
+-- Liest alle produced/consumed-Paare aus einem LuaFlowStatistics-Objekt.
+-- Rückgabe: { [name] = {produced=number, consumed=number} }
+-- Einheit: was get_flow_count liefert (/min für Pollution/Items/Fluids, W für Power)
+local function read_flow_stats(stats)
+  if not stats then return {} end
+  local result = {}
+
+  for name, _ in pairs(stats.input_counts or {}) do
+    local v = safe_flow(stats, name, "input")
+    if not result[name] then result[name] = {produced=0, consumed=0} end
+    result[name].produced = v
+  end
+
+  for name, _ in pairs(stats.output_counts or {}) do
+    local v = safe_flow(stats, name, "output")
+    if not result[name] then result[name] = {produced=0, consumed=0} end
+    result[name].consumed = v
+  end
+
+  return result
+end
+
+-- Liest Strom: Pol-Iteration + Netz-Deduplizierung (bewährte Methode).
+-- Gibt {produced=W, consumed=W} zurück.
+-- ACHTUNG: get_flow_count-Einheit für Strom muss noch kalibriert werden;
+-- wir geben Rohwert aus damit der User den Faktor sehen kann.
+local function read_power_stats(surface)
+  if not (surface and surface.valid) then return {produced=0, consumed=0} end
+
+  local seen = {}
+  local poles = surface.find_entities_filtered{type = "electric-pole"}
+  for _, pole in pairs(poles) do
+    if pole.valid and pole.electric_network_id and not seen[pole.electric_network_id] then
+      local s = pole.electric_network_statistics
+      if s then seen[pole.electric_network_id] = s end
+    end
+  end
+
+  local prod = 0.0
+  local cons = 0.0
+  for _, stats in pairs(seen) do
+    -- input_counts = Verbrauch (Consumption), output_counts = Produktion (Production)
+    for name, _ in pairs(stats.input_counts or {}) do
+      prod = prod + safe_flow_power(stats, name, "input")
+    end
+    for name, _ in pairs(stats.output_counts or {}) do
+      cons = cons + safe_flow_power(stats, name, "output")
+    end
+  end
+  return {produced = prod, consumed = cons}
+end
+
+-- Sortiert eine {[name]={produced,consumed}} Tabelle alphabetisch nach name.
+local function sorted_pairs(tbl)
+  local keys = {}
+  for k in pairs(tbl) do keys[#keys+1] = k end
+  table.sort(keys)
+  local i = 0
+  return function()
+    i = i + 1
+    if keys[i] then return keys[i], tbl[keys[i]] end
+  end
+end
+
+-- =========================================
+-- Öffentliche Funktion: Baut den dritten Block.
+-- surface: LuaSurface des aktuellen Spielers
+-- force:   LuaForce des aktuellen Spielers (für Item/Fluid-Statistiken)
+-- =========================================
+function SimLog.format_factory_stats(surface, force)
+  local lines = {}
+
+  -- --------------------------------------------------
+  -- Kopfzeile: Szenario + Mods
+  -- --------------------------------------------------
+  lines[#lines+1] = "# ----"
+  lines[#lines+1] = "# FACTORY_STATS (tick=" .. tostring(game.tick) .. ")"
+
+  local ok_lvl, lvl = pcall(function() return script.level end)
+  if ok_lvl and lvl then
+    local sname = tostring(lvl.level_name    or "unknown")
+    local cname = tostring(lvl.campaign_name or "")
+    local mname = tostring(lvl.mod_name      or "base")
+    if cname ~= "" then
+      lines[#lines+1] = "# scenario=" .. sname .. "  campaign=" .. cname .. "  provided_by=" .. mname
+    else
+      lines[#lines+1] = "# scenario=" .. sname .. "  provided_by=" .. mname
+    end
+  else
+    lines[#lines+1] = "# scenario=NA"
+  end
+
+  local run_name = (storage and storage.run_name) or ""
+  lines[#lines+1] = "# run_name=" .. (run_name ~= "" and run_name or "(not set)")
+
+  lines[#lines+1] = "# ----"
+  lines[#lines+1] = "# ACTIVE_MODS"
+  lines[#lines+1] = "# id;mod_name;version"
+  local ok_mods, mods = pcall(function() return script.active_mods end)
+  if ok_mods and mods then
+    local mod_list = {}
+    for name, version in pairs(mods) do mod_list[#mod_list+1] = {name=name, version=tostring(version)} end
+    table.sort(mod_list, function(a,b) return a.name < b.name end)
+    for i, e in ipairs(mod_list) do
+      lines[#lines+1] = string.format("%d;%s;%s", i, e.name, e.version)
+    end
+  else
+    lines[#lines+1] = "NA"
+  end
+
+  -- --------------------------------------------------
+  -- Statistik-Tabelle (10-Minuten-Basis)
+  -- --------------------------------------------------
+  lines[#lines+1] = "# ----"
+  lines[#lines+1] = "# STATISTICS_10MIN  (precision=10min, sample_index=1)"
+  lines[#lines+1] = "# category;name;produced;consumed;delta"
+
+  if not (surface and surface.valid) then
+    lines[#lines+1] = "# (no valid surface)"
+    return table.concat(lines, "\n")
+  end
+
+  -- 1) POWER
+  local pwr = read_power_stats(surface)
+  local delta_pwr = pwr.produced - pwr.consumed
+  lines[#lines+1] = string.format("POWER;;%s;%s;%s",
+    fmt_watts(pwr.produced), fmt_watts(pwr.consumed), fmt_watts(delta_pwr))
+
+  -- 2) POLLUTION
+  if surface.pollution_statistics then
+    local pol_data = read_flow_stats(surface.pollution_statistics)
+    -- Pollution hat keinen "name" im Sinne eines Items — wir summieren alles
+    local pol_prod, pol_cons = 0.0, 0.0
+    for _, v in pairs(pol_data) do
+      pol_prod = pol_prod + v.produced
+      pol_cons = pol_cons + v.consumed
+    end
+    lines[#lines+1] = string.format("POLLUTION;;%.2f;%.2f;%.2f",
+      pol_prod, pol_cons, pol_prod - pol_cons)
+  end
+
+  -- 3) ITEMS
+  if force and force.valid then
+    local ok_is, item_stats = pcall(function()
+      return force.get_item_production_statistics(surface)
+    end)
+    if ok_is and item_stats then
+      local items = read_flow_stats(item_stats)
+      for name, v in sorted_pairs(items) do
+        lines[#lines+1] = string.format("ITEM;%s;%.1f;%.1f;%.1f",
+          name, v.produced, v.consumed, v.produced - v.consumed)
+      end
+    end
+  end
+
+  -- 4) FLUIDS
+  if force and force.valid then
+    local ok_fs, fluid_stats = pcall(function()
+      return force.get_fluid_production_statistics(surface)
+    end)
+    if ok_fs and fluid_stats then
+      local fluids = read_flow_stats(fluid_stats)
+      for name, v in sorted_pairs(fluids) do
+        lines[#lines+1] = string.format("FLUID;%s;%.1f;%.1f;%.1f",
+          name, v.produced, v.consumed, v.produced - v.consumed)
+      end
+    end
+  end
+
+  return table.concat(lines, "\n")
+end
+
+-- =========================================
+-- Bestehende Funktionen (unverändert)
+-- =========================================
 
 function SimLog.begin_telegram(tick, surface, force)
   storage.perline_counter = (storage.perline_counter or 0) + 1

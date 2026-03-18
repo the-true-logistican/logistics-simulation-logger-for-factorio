@@ -4,15 +4,17 @@
 --
 -- version 0.8.0 first complete working version
 -- version 0.8.1 Blueprint.ui_front_tick_handler()
+-- version 0.8.2 factory stats block (Teil 3): scenario, mods, power, pollution
 --
 -- =========================================
 
 local UI = require("ui")
 local ItemCost = require("itemcost")
 local Chests = require("chests")
+local SimLog = require("simlog")
 
 local Blueprint = {}
-  Blueprint.version = "0.8.1"
+  Blueprint.version = "0.8.2"
 
 -- Session storage (not persistent)
 local bp_session = {
@@ -448,7 +450,7 @@ function Blueprint.click_bp_extract(event)
 
   costs.footprint = footprint
   
-  -- Fixed assets (blueprint)
+  -- Teil 1: Fixed assets (blueprint entities + footprint)
   local ok4, fixed_txt = pcall(function()
     return ItemCost.format_detailed_breakdown(costs, player)
   end)
@@ -460,10 +462,7 @@ function Blueprint.click_bp_extract(event)
   end
 
   -- =========================================
-  -- MASTERDATA (Unit costs): blueprint items + produced items + factory portfolio (optional)
-  -- =========================================
-  -- =========================================
-  -- MASTERDATA (Unit costs): FULL closure to terminal raws
+  -- Teil 2: MASTERDATA (Unit costs): blueprint items + produced items + factory portfolio
   -- =========================================
 
   local function is_valid_item_key(name)
@@ -522,9 +521,27 @@ function Blueprint.click_bp_extract(event)
     end
   end
 
+  -- =========================================
+  -- Teil 3: Factory Stats (Szenario, Mods, Strom, Pollution)
+  -- =========================================
+
+  local stats_txt = ""
+  local ok_stats, result_stats = pcall(function()
+    return SimLog.format_factory_stats(player.surface, player.force)
+  end)
+  if ok_stats and result_stats and result_stats ~= "" then
+    stats_txt = result_stats
+  else
+    safe_log("click_bp_extract: format_factory_stats failed - " .. tostring(result_stats))
+  end
+
+  -- Alle drei Teile zusammensetzen
   local txt = fixed_txt
-  if md_txt ~= '' then
-    txt = txt .. '\n\n' .. md_txt
+  if md_txt ~= "" then
+    txt = txt .. "\n\n" .. md_txt
+  end
+  if stats_txt ~= "" then
+    txt = txt .. "\n\n" .. stats_txt
   end
 
   UI.show_inventory_window(player, txt)
