@@ -5,7 +5,7 @@
 -- version 0.8.0 first complete working version
 -- version 0.8.1 ring buffer M.TX_MAX_EVENTS load/save secure
 --               ring buffer M.BUFFER_MAX_LINES load/save secure
--- version 0.8.2 minog bugs in line counting
+-- version 0.8.2 minor bugs in line counting
 --
 -- =========================================
 
@@ -119,7 +119,7 @@ function Export.export_tx_json(player)
 
   local data = {
     metadata = {
-      mod_version   = get_logger_version(),
+      mod_version   = Util.get_logger_version(),
       run_name      = storage.run_name or "unnamed",
       start_tick    = storage.run_start_tick or 0,
       export_tick   = game.tick,
@@ -203,7 +203,7 @@ function Export.export_inv_json(player)
 
   local data = {
     metadata = {
-      mod_version = get_logger_version(),
+      mod_version = Util.get_logger_version(),
       run_name = storage.run_name or "unnamed",
       start_tick = storage.run_start_tick or 0,
       export_tick = game.tick,
@@ -270,12 +270,12 @@ function Export.export_json(player)
   -- Build JSON structure (without os.date - not available in Factorio!)
   local data = {
     metadata = {
-      mod_version = get_logger_version(),
+      mod_version = Util.get_logger_version(),
       run_name = storage.run_name or "unnamed",
       start_tick = storage.run_start_tick or 0,
       export_tick = game.tick,
       line_count = line_count,
-      sample_interval = storage.sample_interval or M.SAMPLE_INTERVAL_TICKS
+      sample_interval = M.get_sample_interval_ticks()
     },
     registrations = {
       chests = Export.serialize_registry(storage.registry),

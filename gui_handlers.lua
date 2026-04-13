@@ -41,13 +41,11 @@ end
 function GUI.set_protocol_state(player, state)
   if state then
     storage.protocol_active = true
-    storage.tx_active = true
     if player then
       player.print({"logistics_simulation.cmd_prot_on"})
     end
   else
     storage.protocol_active = false
-    storage.tx_active = false
     if player then
       player.print({"logistics_simulation.cmd_prot_off"})
     end
@@ -194,43 +192,52 @@ end
 -- Buffer/Export Window handlers
 -- =========================================
 
+local function get_export_mode_table()
+  if type(storage.export_mode) ~= "table" then
+    storage.export_mode = {}
+  end
+  return storage.export_mode
+end
+
 function GUI.click_buffer_export(event)
   local player = game.players[event.player_index]
-  storage.export_mode = "buffer"
+  get_export_mode_table()[player.index] = "buffer"
   UI.show_export_dialog(player)
 end
 
 function GUI.click_tx_export(event)
   local player = game.players[event.player_index]
-  storage.export_mode = "tx"
+  get_export_mode_table()[player.index] = "tx"
   UI.show_export_dialog(player)
 end
 
 function GUI.click_inv_export(event)
   local player = game.players[event.player_index]
-  storage.export_mode = "inv"
+  get_export_mode_table()[player.index] = "inv"
   UI.show_export_dialog(player)
 end
 
 function GUI.click_export_csv(event)
   local player = game.players[event.player_index]
-  if storage.export_mode == "tx" then
+  local mode = storage.export_mode and storage.export_mode[player.index]
+  if mode == "tx" then
     Export.export_tx_csv(player)
-  elseif storage.export_mode == "inv" then
+  elseif mode == "inv" then
     Export.export_inv_csv(player)
   else
-    Export.export_csv(player) -- buffer/protocol
+    Export.export_csv(player)
   end
 end
 
 function GUI.click_export_json(event)
   local player = game.players[event.player_index]
-  if storage.export_mode == "tx" then
+  local mode = storage.export_mode and storage.export_mode[player.index]
+  if mode == "tx" then
     Export.export_tx_json(player)
-  elseif storage.export_mode == "inv" then
+  elseif mode == "inv" then
     Export.export_inv_json(player)
   else
-    Export.export_json(player) -- buffer/protocol
+    Export.export_json(player)
   end
 end
 

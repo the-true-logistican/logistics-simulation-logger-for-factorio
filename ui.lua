@@ -21,7 +21,6 @@ local mod_gui = require("mod-gui")
 local UI = {}
 UI.version = "0.8.4"
 
-local mod_gui = require("mod-gui")
 local FRAME_NAME = "logsim_ui_placeholder_frame"
 local LABEL_NAME = "logsim_ui_placeholder_label"
 

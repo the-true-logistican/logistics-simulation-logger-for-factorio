@@ -123,14 +123,14 @@ function Chests.check_selected_entity(player)
 
   if not ent or not ent.valid then
     local msg = {"logistics_simulation.no_entity_selected"}
-    info_print(player, msg)
+    Util.info_print(player, msg)
     Util.fly(player, nil, msg)
     return false
   end
 
   if not ent.unit_number then
     local msg = {"logistics_simulation.no_unit_number"}
-    info_print(player, msg)
+    Util.info_print(player, msg)
     Util.fly(player, nil, msg)
     return false
   end
@@ -259,7 +259,7 @@ function Chests.register_selected(player, log)
   if is_machine(ent) then return Chests.register_machine(player, log) end
 
   local msg = {"logistics_simulation.no_reg_entity"}
-  info_print(player, msg)
+  Util.info_print(player, msg)
   Util.fly(player, ent, msg)
 end
 
@@ -272,12 +272,12 @@ function Chests.register_chest(player, log)
   local ent = player.selected
 
   if not is_chest(ent) then
-    info_print(player, {"logistics_simulation.no_chest"})
+    Util.info_print(player, {"logistics_simulation.no_chest"})
     return
   end
 
   if storage.registry and storage.registry[ent.unit_number] then
-    info_print(player, {"logistics_simulation.already_registered_chest"})
+    Util.info_print(player, {"logistics_simulation.already_registered_chest"})
     return
   end
 
@@ -307,9 +307,9 @@ function Chests.register_chest(player, log)
   end
 
   local msg = {"logistics_simulation.registered_chest", id}
-  info_print(player, msg)
+  Util.info_print(player, msg)
   Util.fly(player, ent, msg)
-  info_print(player, {"logistics_simulation.show_buffer"})
+  Util.info_print(player, {"logistics_simulation.show_buffer"})
 end
 
 -- =========================================
@@ -321,12 +321,12 @@ function Chests.register_tank(player, log)
   local ent = player.selected
 
   if not is_tank(ent) then
-    info_print(player, {"logistics_simulation.no_reg_entity"})
+    Util.info_print(player, {"logistics_simulation.no_reg_entity"})
     return
   end
 
   if storage.registry and storage.registry[ent.unit_number] then
-    info_print(player, {"logistics_simulation.already_registered_chest"})
+    Util.info_print(player, {"logistics_simulation.already_registered_chest"})
     return
   end
 
@@ -355,9 +355,9 @@ function Chests.register_tank(player, log)
   end
 
   local msg = {"logistics_simulation.registered_chest", id}
-  info_print(player, msg)
+  Util.info_print(player, msg)
   Util.fly(player, ent, msg)
-  info_print(player, {"logistics_simulation.show_buffer"})
+  Util.info_print(player, {"logistics_simulation.show_buffer"})
 end
 
 -- =========================================
@@ -369,12 +369,12 @@ function Chests.register_machine(player, log)
   local ent = player.selected
 
   if not is_machine(ent) then
-    info_print(player, {"logistics_simulation.no_machine"})
+    Util.info_print(player, {"logistics_simulation.no_machine"})
     return
   end
 
   if storage.machines and storage.machines[ent.unit_number] then
-    info_print(player, {"logistics_simulation.already_registered_machine"})
+    Util.info_print(player, {"logistics_simulation.already_registered_machine"})
     return
   end
 
@@ -403,9 +403,9 @@ function Chests.register_machine(player, log)
   end
 
   local msg = {"logistics_simulation.registered_machine", id}
-  info_print(player, msg)
+  Util.info_print(player, msg)
   Util.fly(player, ent, msg)
-  info_print(player, {"logistics_simulation.show_buffer"})
+  Util.info_print(player, {"logistics_simulation.show_buffer"})
 end
 
 -- =========================================
@@ -417,7 +417,7 @@ function Chests.register_protect(player, log)
   local ent = player.selected
 
   if storage.protected and storage.protected[ent.unit_number] then
-    info_print(player, {"logistics_simulation.already_protected"})
+    Util.info_print(player, {"logistics_simulation.already_protected"})
     return
   end
 
@@ -445,9 +445,9 @@ function Chests.register_protect(player, log)
   end
 
   local msg = {"logistics_simulation.registered_protected", id}
-  info_print(player, msg)
+  Util.info_print(player, msg)
   Util.fly(player, ent, msg)
-  info_print(player, {"logistics_simulation.show_buffer"})
+  Util.info_print(player, {"logistics_simulation.show_buffer"})
 end
 
 -- =========================================
@@ -468,7 +468,7 @@ function Chests.unregister_selected(player, log)
     removed_any = true
 
     if log then log(string.format("EV;%d;UNREG;%s;%d", game.tick, rec.id or "?", unit)) end
-    info_print(player, {"logistics_simulation.unregistered_registry", rec.id or "?"})
+    Util.info_print(player, {"logistics_simulation.unregistered_registry", rec.id or "?"})
   end
 
   local prec = storage.protected and storage.protected[unit]
@@ -478,7 +478,7 @@ function Chests.unregister_selected(player, log)
     removed_any = true
 
     if log then log(string.format("EV;%d;UNPROT;%s;%d", game.tick, prec.id or "?", unit)) end
-    info_print(player, {"logistics_simulation.unregistered_protected", prec.id or "?"})
+    Util.info_print(player, {"logistics_simulation.unregistered_protected", prec.id or "?"})
   end
 
   local mrec = storage.machines and storage.machines[unit]
@@ -488,7 +488,7 @@ function Chests.unregister_selected(player, log)
     removed_any = true
 
     if log then log(string.format("EV;%d;UNMACH;%s;%d", game.tick, mrec.id or "?", unit)) end
-    info_print(player, {"logistics_simulation.unregistered_registry", mrec.id or "?"})
+    Util.info_print(player, {"logistics_simulation.unregistered_registry", mrec.id or "?"})
   end
 
   if removed_any then
@@ -497,7 +497,7 @@ function Chests.unregister_selected(player, log)
     return
   end
 
-  info_print(player, {"logistics_simulation.unregistered_none"})
+  Util.info_print(player, {"logistics_simulation.unregistered_none"})
   if log then log(string.format("EV;%d;UNSEL;NONE;%d", game.tick, unit)) end
 end
 

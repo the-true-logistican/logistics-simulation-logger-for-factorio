@@ -12,12 +12,15 @@
 -- Version 0.8.5 bug in ensure_storage_defaults Migration safety for older saves
 -- Version 0.8.6 Reset clears players inventory too
 --               Simple Days-Time-Clock
+-- Version 0.8.7 Setup Parameters corrected
 --
 -- =========================================
 
 local M = {}
 
-M.version = "0.8.6"
+M.version = "0.8.7"
+
+M.DEBUG = true
 
 -- =====================================
 -- Technical Configuration
@@ -27,9 +30,26 @@ M.version = "0.8.6"
 
 -- ticks_per_day (z.B. 25 000) → Spielzeit / Tageslänge
 -- 1 ISO-Minute = 1/1440 of one Factorio-Day
-M.SAMPLE_INTERVAL_TICKS = 125 -- (60fps) this is 10min in ISO-Time (exact 173,6)
-M.BUFFER_MAX_LINES = 5000    -- max number of complete inventory
-M.TX_MAX_EVENTS = 50000     -- max number of transaction records kept in memory
+-- M.SAMPLE_INTERVAL_TICKS = 125 -- (60fps) this is 10min in ISO-Time (exact 173,6)
+-- M.BUFFER_MAX_LINES = 5000    -- max number of complete inventory
+-- M.TX_MAX_EVENTS = 50000     -- max number of transaction records kept in memory
+
+M.SETTING_KEYS = {
+    BUFFER_MAX = "logsim_buffer_max_lines",
+    TX_MAX     = "logsim_tx_max_events",
+    INTERVAL   = "logsim_sample_interval_ticks"
+}
+
+function M.get_buffer_limit()
+    return settings.global[M.SETTING_KEYS.BUFFER_MAX].value
+end
+function M.get_tx_max_events()
+    return settings.global[M.SETTING_KEYS.TX_MAX].value
+end
+function M.get_sample_interval_ticks()
+    return settings.global[M.SETTING_KEYS.INTERVAL].value
+end
+
 
 -- End Parameters from Setup
 
@@ -196,9 +216,7 @@ M.TOPBAR_BTN1_TOOLTIP = {"logistics_simulation.topbar_btn1_tooltip"}
 M.TOPBAR_BTN2_TOOLTIP = {"logistics_simulation.topbar_btn2_tooltip"}
 M.TOPBAR_BTN3_TOOLTIP = {"logistics_simulation.topbar_btn3_tooltip"}
 
--- Storage Keys für Toggle-States
-M.STORAGE_TOGGLE2_STATE = "ls_toggle2_state"
-M.STORAGE_TOGGLE3_STATE = "ls_toggle3_state"
+-- (Storage keys for toggle states removed; see storage.protocol_active / storage.gp_enabled)
 
 -- =====================================
 -- Item Aliases (for compact logging)
@@ -258,14 +276,7 @@ M.ITEM_ALIASES = {
 -- =====================================
 
 local function apply_sample_interval_from_config()
-  local cfg = nil
-  local s = settings and settings.global and settings.global["logsim_sample_interval_ticks"]
-  if s then
-    cfg = s.value
-  end
-  if cfg == nil then
-    cfg = M.SAMPLE_INTERVAL_TICKS
-  end
+  local cfg = M.get_sample_interval_ticks()
   if type(cfg) ~= "number" or cfg < 1 then
     return
   end
@@ -273,59 +284,41 @@ local function apply_sample_interval_from_config()
 end
 
 local function apply_tx_max_events_from_config()
-  -- Source of truth: Mod settings (runtime-global). Fallback: config.lua constant.
-  local cfg = nil
-  if settings and settings.global and settings.global["logsim_tx_max_events"] then
-    cfg = settings.global["logsim_tx_max_events"].value
-  end
-  if cfg == nil then
-    cfg = M.TX_MAX_EVENTS
-  end
-
-  -- Validate
+  local cfg = M.get_tx_max_events()
   if type(cfg) ~= "number" or cfg < 1 then
-    log(string.format("[LogSim][ERROR] Invalid TX_MAX_EVENTS=%s. Keeping stored tx_max_events=%s",
+    log(string.format("[LogSim][ERROR] Invalid tx_max_events=%s. Keeping stored value=%s",
       tostring(cfg), tostring(storage.tx_max_events)))
-
     for _, p in pairs(game.players) do
       if p and p.valid then
-        p.print({"", "[LogSim] ERROR: TX_MAX_EVENTS invalid (", tostring(cfg),
+        p.print({"", "[LogSim] ERROR: tx_max_events invalid (", tostring(cfg),
                  "). Keeping old value: ", tostring(storage.tx_max_events)})
       end
     end
     return
   end
-
-  -- ALWAYS apply (tx ringbuffer reacts if changed)
   storage.tx_max_events = cfg
 end
 
 local function apply_buffer_max_lines_from_config()
-  -- Source of truth: Mod settings (runtime-global). Fallback: config.lua constant.
-  local cfg = nil
-  if settings and settings.global and settings.global["logsim_buffer_max_lines"] then
-    cfg = settings.global["logsim_buffer_max_lines"].value
-  end
-  if cfg == nil then
-    cfg = M.BUFFER_MAX_LINES
-  end
-
-  -- Validate
+  local cfg = M.get_buffer_limit()
   if type(cfg) ~= "number" or cfg < 1 then
-    log(string.format("[LogSim][ERROR] Invalid BUFFER_MAX_LINES=%s. Keeping stored buffer_max_lines=%s",
+    log(string.format("[LogSim][ERROR] Invalid buffer_max_lines=%s. Keeping stored value=%s",
       tostring(cfg), tostring(storage.buffer_max_lines)))
-
     for _, p in pairs(game.players) do
       if p and p.valid then
-        p.print({"", "[LogSim] ERROR: BUFFER_MAX_LINES invalid (", tostring(cfg),
+        p.print({"", "[LogSim] ERROR: buffer_max_lines invalid (", tostring(cfg),
                  "). Keeping old value: ", tostring(storage.buffer_max_lines)})
       end
     end
     return
   end
-
-  -- ALWAYS apply (buffer ringbuffer reacts if changed)
   storage.buffer_max_lines = cfg
+end
+
+function M.apply_all_settings()
+  apply_sample_interval_from_config()
+  apply_buffer_max_lines_from_config()
+  apply_tx_max_events_from_config()
 end
 
 function M.ensure_storage_defaults(st)
@@ -335,10 +328,7 @@ function M.ensure_storage_defaults(st)
     storage = st
   end
 
-  -- Always re-apply the 3 numeric settings (true config knobs)
-  apply_sample_interval_from_config()
-  apply_buffer_max_lines_from_config()
-  apply_tx_max_events_from_config()
+  st.export_mode = st.export_mode or {}
 
   -- -------- core run / protocol --------
   st.run_name = st.run_name or nil
@@ -387,10 +377,6 @@ function M.ensure_storage_defaults(st)
   if st.next_protect_id == nil then st.next_protect_id = max_id_from(st.protected, "P") + 1 end
 
   -- machines (Mxx)
-  st.machines = st.machines or {}
-  if st.next_machine_id == nil then st.next_machine_id = max_id_from(st.machines, "M") + 1 end
-
--- -------- machines --------
   -- Machines are tracked separately from the generic registry.
   -- When the mod is disabled/enabled, persistent storage may be recreated without these keys.
   st.machines = st.machines or {}
@@ -414,7 +400,7 @@ function M.ensure_storage_defaults(st)
   st.tx_events = st.tx_events or {}
   st.tx_watch = st.tx_watch or {}
   st.tx_active_inserters = st.tx_active_inserters or {}
-  storage.tx_wip_inserters = storage.tx_wip_inserters or {}
+  st.tx_wip_inserters = st.tx_wip_inserters or {}
   st.tx_object_map = st.tx_object_map or {}
 
   -- Player hands as pseudo-inserters (H01, H02, ...)
@@ -431,10 +417,13 @@ function M.ensure_storage_defaults(st)
   -- transaction.lua uses tx_obj_by_unit (new name); keep alias to older tx_object_map.
   st.tx_obj_by_unit = st.tx_obj_by_unit or st.tx_object_map or {}
   
-  -- TX ringbuffer state (migration-safe)
+  -- TX ringbuffer state (migration-safe fallbacks for old saves)
+  -- IMPORTANT: Do NOT add storage._tx_rb_initialized here.
+  -- That sentinel is owned exclusively by tx_rb_ensure() in transaction.lua.
+  -- Adding it here would silently disable the one-time migration/init block.
   st.tx_head = st.tx_head or 1
   st.tx_size = st.tx_size or #st.tx_events
-  st.tx_next_id = st.tx_next_id or (#st.tx_events + 1)
+  -- tx_next_id entfernt (Überbleibsel); monotoner ID-Zähler ist storage.tx_seq in transaction.lua
 
   -- Rendering ids
   st.tx_mark_render_ids = st.tx_mark_render_ids or {}
@@ -449,8 +438,8 @@ function M.ensure_storage_defaults(st)
   }
 
  -- NEU: Toggle-States für Topbar-Buttons
-  if st[M.STORAGE_TOGGLE2_STATE] == nil then st[M.STORAGE_TOGGLE2_STATE] = false end
-  if st[M.STORAGE_TOGGLE3_STATE] == nil then st[M.STORAGE_TOGGLE3_STATE] = false end
+  -- Entfernt: ls_toggle2_state / ls_toggle3_state (tote Felder; echter State liegt in
+  -- storage.protocol_active und storage.gp_enabled)
 
   return st
 end

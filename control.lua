@@ -34,10 +34,10 @@
 --               GUI-Handler moved to separate module
 -- Version 0.8.8 show_xxxx if exists then bring_to_front + return
 --               Reset clears roboports (robots + repair mats) + destroys flying bots
+-- Version 0.8.x only small debugging and code revision
+-- Version 0.8.12 Config correct handle
 --
 -- =========================================
-
-local DEBUG = true
 
 local M = require("config")
 local Buffer = require("buffer")
@@ -59,13 +59,15 @@ local Registry = require("event_registry")
 local PROVIDER_API = "logistics_events_api"
 
 -- Forward declarations
-local debug_print
 local ensure_storage_defaults
 local maybe_prompt_runname_for_all_players
 local resolve_entity
 local cleanup_entity_from_registries
 local clear_invalid_rendering_objects
 
+local needs_registration = false
+local event_registry = nil
+local _needs_UI_time_Window = false
 
 -- Funktion, die die Daten vom Provider verarbeitet
 local function handle_logistics_event(event)
@@ -126,23 +128,6 @@ resolve_entity = function(rec)
 end
 
 
-debug_print = function(msg)
-  if DEBUG then
-    local prefix = {"logistics_simulation.chat_name"}
-    if type(msg) == "table" then
-      game.print({"", prefix, " ", msg})
-    else
-      game.print({"", prefix, " ", tostring(msg)})
-    end
-  end
-end
-
-info_print = function(player, msg)
-  if not storage.info_mode then return end
-  if not (player and player.valid) then return end
-  player.print(msg)
-end
-
 ensure_storage_defaults = function()
   M.ensure_storage_defaults(storage)
 end
@@ -150,17 +135,7 @@ end
 local function init_storage()
   storage = storage or {}
   M.ensure_storage_defaults(storage)
-end
-
-build_base_filename = function(run_name, start_tick)
-  local rn = Util.sanitize_filename(run_name or "run")
-  local ver = Util.sanitize_filename(get_logger_version())
-  local tick = start_tick or 0
-  return string.format("tick%09d__%s__logsim-v%s", tick, rn, ver)
-end
-
-function get_logger_version()
-  return (script.active_mods and script.active_mods["logistics_simulation"]) or "unknown"
+  M.apply_all_settings()
 end
 
 maybe_prompt_runname_for_all_players = function()
@@ -251,6 +226,7 @@ local function on_runtime_mod_setting_changed(event)
 
   -- Re-read settings into storage (with fallback to config.lua)
   M.ensure_storage_defaults(storage)
+  M.apply_all_settings()
 
   -- Force ringbuffer systems to react immediately
   if Buffer and Buffer.ensure_defaults then
@@ -264,10 +240,6 @@ end
 -- -----------------------------------------
 -- Custom Inputs (Hotkeys)
 -- -----------------------------------------
-
-local function hotkey_toggle_buffer(event)
-  GUI.hotkey_toggle_buffer(event)  
-end
 
 -- NEW: Shift+R - if inserter is selected, allow activation ONLY if watched
 local function hotkey_register_chest(event)
@@ -329,103 +301,7 @@ end
 -- Topbar Button Handler mit Protokoll und Global Power
 -- =====================================
 
--- Hilfsfunktion für Protocol Recording
-local function set_protocol_state(player, state)
-  if state then
-    storage.protocol_active = true
-    storage.tx_active = true
-    if player then
-      player.print({"logistics_simulation.cmd_prot_on"})
-    end
-  else
-    storage.protocol_active = false
-    storage.tx_active = false
-    if player then
-      player.print({"logistics_simulation.cmd_prot_off"})
-    end
-  end
-  
-  -- GUI aktualisieren (falls offen)
-  if player and player.gui.screen[M.GUI_BUFFER_FRAME] then
-    Buffer.refresh_for_player(player)
-  end
-end
-
--- Hilfsfunktion für Global Power Network
-local function set_global_power_state(player, surface, state)
-  if not state then
-    storage.gp_enabled = true
-    surface.create_global_electric_network()
-    if player then
-      player.print({"logistics_simulation.cmd_gp_on"})
-    end
-  else
-    storage.gp_enabled = false
-    surface.destroy_global_electric_network()
-    if player then
-      player.print({"logistics_simulation.cmd_gp_off"})
-    end
-  end
-end
-
--- Topbar Buttons aktualisieren (nach State-Änderungen)
-local function update_topbar_buttons()
-  for _, player in pairs(game.players) do
-    local button_flow = mod_gui.get_button_flow(player)
-    local root = button_flow[M.TOPBAR_ROOT]
-    if root and root.valid then
-      -- Button 2 (Protocol) aktualisieren
-      local btn2 = root[M.TOPBAR_BTN2]
-      if btn2 and btn2.valid then
-        local new_sprite = storage.protocol_active and M.TOPBAR_BTN2_ON_SPRITE or M.TOPBAR_BTN2_OFF_SPRITE
-        btn2.sprite = new_sprite
-      end
-      
-      -- Button 3 (Global Power) aktualisieren
-      local btn3 = root[M.TOPBAR_BTN3]
-      if btn3 and btn3.valid then
-        local new_sprite = storage.gp_enabled and M.TOPBAR_BTN3_ON_SPRITE or M.TOPBAR_BTN3_OFF_SPRITE
-        btn3.sprite = new_sprite
-      end
-    end
-  end
-end
-
--- Topbar Click Handler
-local function handle_topbar_click(event, player, element)
-  local name = element.name
-  local surface = player.surface
-  
-  -- Button 1: Einfacher Klick (Buffer anzeigen)
-  if name == M.TOPBAR_BTN1 then
-    hotkey_toggle_buffer(event)
-    return
-  end
-  
-  -- Button 2: Protocol Recording Toggle
-  if name == M.TOPBAR_BTN2 then
-    local new_state = not (storage.protocol_active or false)
-    set_protocol_state(player, new_state)
-    
-    -- Sprite aktualisieren
-    local new_sprite = new_state and M.TOPBAR_BTN2_ON_SPRITE or M.TOPBAR_BTN2_OFF_SPRITE
-    element.sprite = new_sprite
-    
-    return
-  end
-  
-  -- Button 3: Global Power Network Toggle
-  if name == M.TOPBAR_BTN3 then
-    local new_state = not (storage.gp_enabled or false)
-    set_global_power_state(player, surface, new_state)
-    
-    -- Sprite aktualisieren
-    local new_sprite = new_state and M.TOPBAR_BTN3_ON_SPRITE or M.TOPBAR_BTN3_OFF_SPRITE
-    element.sprite = new_sprite
-    
-    return
-  end
-end
+-- moved to gui_handlers.lua
 
 -- -----------------------------------------
 -- Lifecycle Events
@@ -437,7 +313,7 @@ script.on_init(function()
     event_registry = Registry.new()
 
   init_storage()
-  debug_print({"logistics_simulation.mod_initialised"})
+  Util.debug_print({"logistics_simulation.mod_initialised"})
   -- Transactions: build initial maps/watchlist (in-memory only)
   if Transaction and Transaction.rebuild_object_map then
     Transaction.rebuild_object_map()
@@ -460,7 +336,7 @@ script.on_configuration_changed(function(data)
   if mod_changes then
     local old_version = mod_changes.old_version
     if old_version and old_version < "0.5.2" then
-      debug_print({"", "Migrating from ", old_version, " to 0.5.2"})
+      Util.debug_print({"", "Migrating from ", old_version, " to 0.5.2"})
       storage._needs_rendering_cleanup = true
     end
   end
@@ -546,7 +422,7 @@ script.on_event(defines.events.on_gui_confirmed, function(event)
   if el.name ~= "logsim_runname_text" then return end
 
   local player = game.players[event.player_index]
-  handle_runname_submit(player)
+  GUI.click_runname_ok(event) 
 end)
 
 script.on_event(defines.events.on_gui_closed, function(event)
@@ -673,13 +549,6 @@ local function tick_build_and_append_logline()
   end
 end
 
-script.on_event(defines.events.on_runtime_mod_setting_changed, function(e)
-  if e.setting == "logsim_sample_interval_ticks" then
-    local v = settings.global["logsim_sample_interval_ticks"].value
-    game.print("SETTING CHANGED -> " .. tostring(v))
-  end
-end)
-
 script.on_nth_tick(M.CLOCk_INTERVAL_TICKS, function()
 for _, player in pairs(game.players) do
     -- Prüfen, ob der Spieler überhaupt im Spiel (valid) ist
@@ -716,11 +585,6 @@ script.on_nth_tick(M.GUI_REFRESH_TICKS, function()
 end)
 
 script.on_event(defines.events.on_tick, function(event)
-  if needs_registration then
-    needs_registration = false
-    try_register_logistics_events()
-  end
-
   -- Transactions (in-memory): observe inserter movements every tick
   if Transaction and Transaction.on_tick then
     if storage.protocol_active then
@@ -799,7 +663,7 @@ script.on_event(
     local name = event.input_name
 
     if name == "logsim_toggle_buffer" then
-      hotkey_toggle_buffer(event)
+      GUI.hotkey_toggle_buffer(event)
     elseif name == "logsim_register_chest" then
       hotkey_register_chest(event)
     elseif name == "logsim_register_protect" then

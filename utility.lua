@@ -9,6 +9,8 @@
 
 local Util = {}
 
+local M = require("config")
+
   Util.version = "0.8.1"
 
 -- Factorio day starts at noon; we shift by +0.5 day so that 00:00 maps to midnight.
@@ -94,22 +96,6 @@ end
 -- Public API
 -- -----------------------------
 
--- Returns a table with breakdown (no date mapping).
-function Util.to_parts(tick, surface)
-  local tpd = get_tpd(surface)
-  if surface then
-    local day, day_frac, hh, mm, ss, total_seconds = tick_to_parts(tick, tpd, surface)
-  end
-
-  return {
-    day = day,                 -- 1..n
-    day_frac = day_frac,       -- 0..1 from midnight
-    hh = hh, mm = mm, ss = ss,
-    clock = string.format("%02d:%02d:%02d", hh, mm, ss),
-    seconds_in_day = total_seconds,
-    ticks_per_day = tpd
-  }
-end
 
 -- Seconds since base_date 00:00:00 (synthetic "UTC-like" time axis).
 function Util.to_sec_utc(tick, surface)
@@ -214,5 +200,33 @@ function Util.bring_to_front(frame)
   end
 end
 
+-- =========================================
+-- Version Helper (reusable across modules)
+-- =========================================
+
+function Util.get_logger_version()
+  return (script.active_mods and script.active_mods["logistics_simulation"]) or "unknown"
+end
+
+-- =========================================
+-- Info Print (depends on storage.info_mode)
+-- =========================================
+
+function Util.info_print(player, msg)
+  if not storage or not storage.info_mode then return end
+  if not (player and player.valid) then return end
+  player.print(msg)
+end
+
+function Util.debug_print(msg)
+  if M.DEBUG then
+    local prefix = {"logistics_simulation.chat_name"}
+    if type(msg) == "table" then
+      game.print({"", prefix, " ", msg})
+    else
+      game.print({"", prefix, " ", tostring(msg)})
+    end
+  end
+end
 
 return Util

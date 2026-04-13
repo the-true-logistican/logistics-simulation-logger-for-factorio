@@ -6,13 +6,14 @@
 -- version 0.8.0 first complete working version
 -- version 0.8.1 ring buffer M.BUFFER_MAX_LINES load/save secure
 -- version 0.8.2 bug in gui-window if /prot off
+-- Version 0.8.3 Setup Parameters corrected
 --
 -- =========================================
 
 local M = require("config")
 
 local Buffer = {}
-Buffer.version = "0.8.2"
+Buffer.version = "0.8.3"
 
 -- -----------------------------------------
 -- Defaults
@@ -23,13 +24,12 @@ function Buffer.ensure_defaults()
 end
 
 
-
 -- -----------------------------------------
 -- Ringbuffer helpers (O(1) append; no table.remove(1))
 -- -----------------------------------------
 
 local function buf_rb_get_max()
-  return tonumber(storage.buffer_max_lines) or tonumber(M.BUFFER_MAX_LINES) or 500000
+  return tonumber(storage.buffer_max_lines) or M.get_buffer_limit()
 end
 
 local function buf_rb_count()
@@ -86,27 +86,25 @@ local function buf_rb_resize(new_max)
 end
 
 local function buf_rb_ensure()
-  -- migration: if size not set, assume linear table
   if storage.buffer_lines == nil then storage.buffer_lines = {} end
   if storage.buffer_head == nil then storage.buffer_head = 1 end
   if storage.buffer_size == nil then storage.buffer_size = #storage.buffer_lines end
-  if storage.buffer_max_lines == nil then storage.buffer_max_lines = tonumber(M.BUFFER_MAX_LINES) or 500000 end
+  if storage.buffer_max_lines == nil then 
+    storage.buffer_max_lines = M.get_buffer_limit()
+  end
 
-  local max_cfg = tonumber(storage.buffer_max_lines) or tonumber(M.BUFFER_MAX_LINES) or 500000
+  local max_cfg = tonumber(storage.buffer_max_lines) or M.get_buffer_limit()
   local max_now = buf_rb_get_max()
   if max_now ~= max_cfg then
     storage.buffer_max_lines = max_cfg
     max_now = max_cfg
   end
 
-  -- If max changed (e.g., config), resize to match.
-  -- Detect by comparing table length to max? Better: store last_max.
   if storage._buffer_last_max ~= max_now then
     storage._buffer_last_max = max_now
     buf_rb_resize(max_now)
   end
 
-  -- clamp head/size
   if storage.buffer_head < 1 then storage.buffer_head = 1 end
   if storage.buffer_size < 0 then storage.buffer_size = 0 end
   if storage.buffer_size > max_now then storage.buffer_size = max_now end

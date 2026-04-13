@@ -32,6 +32,7 @@
 -- Version 0.8.3 WIP virtual account + Shift-R toggle normal/WIP/OFF (minimal additions)
 -- Version 0.8.4 transactions with the "hand" of the player
 --               crafting in wirtual inventpry MAN
+-- Versioj 0.8.5 Setup Parameters corrected
 --
 -- =========================================
 
@@ -40,7 +41,7 @@ local UI = require("ui")
 local Util = require("utility")  -- fly() lives here
 
 local Transaction = {}
-Transaction.version = "0.8.4"
+Transaction.version = "0.8.5"
 
 -- forward declarations (needed because ensure_defaults() uses them)
 local tx_rb_ensure
@@ -57,8 +58,10 @@ local function ensure_defaults()
   storage.tx_wip_inserters = storage.tx_wip_inserters or {}
 
   -- NEW: ensure virtual account exists (migration safe even if config.lua not updated yet)
-  storage.tx_virtual = storage.tx_virtual or { T00 = {}, SHIP = {}, RECV = {} }
+  storage.tx_virtual = storage.tx_virtual or { T00 = {}, SHIP = {}, RECV = {}, WIP = {}, MAN = {} }
+  -- Migration safety: add any slot that may be missing from older saves
   storage.tx_virtual.WIP = storage.tx_virtual.WIP or {}
+  storage.tx_virtual.MAN = storage.tx_virtual.MAN or {}
 
   -- Keep TX ringbuffer settings in sync with config/settings across save/load.
   tx_rb_ensure()
@@ -69,11 +72,9 @@ local function ensure_defaults()
   storage.tx_hand_list = storage.tx_hand_list or {}
   storage.tx_inserter_list = storage.tx_inserter_list or {}
 
-  local desired_max =
+local desired_max =
     tonumber(storage.tx_max_events)
-    or tonumber(Config.TX_MAX_EVENTS)
-    or (Config.M and tonumber(Config.M.TX_MAX_EVENTS))
-    or 500000
+    or Config.get_tx_max_events()
 
   if tonumber(storage.tx_max_events) ~= desired_max then
     tx_rb_resize(desired_max)
@@ -304,10 +305,15 @@ tx_rb_ensure = function()
   storage.tx_events = storage.tx_events or {}
 
   -- Max events can be configured (defaults to 500k)
-  storage.tx_max_events = storage.tx_max_events or 500000
+  storage.tx_max_events = storage.tx_max_events or Config.get_tx_max_events()
 
-  -- Migration: if we already have a linear array but no rb state, initialize rb state.
-  if storage.tx_head == nil or storage.tx_write == nil or storage.tx_size == nil then
+  -- _tx_rb_initialized is the single explicit migration sentinel.
+  -- It is intentionally NOT set in config.lua ensure_storage_defaults —
+  -- only this function may set it to true.
+  -- Old saves (nil → first load ever) and brand-new saves (nil → init) both
+  -- go through this block exactly once, regardless of which individual fields
+  -- happen to exist already.
+  if not storage._tx_rb_initialized then
     local t = storage.tx_events
     local n = #t
 
@@ -344,6 +350,8 @@ tx_rb_ensure = function()
         storage.tx_seq = ev.id
       end
     end
+
+    storage._tx_rb_initialized = true
   end
 
   -- Normalize fields
@@ -402,7 +410,7 @@ local function tx_rb_get_event(i)
   if not i then return nil end
   local size = storage.tx_size or 0
   if i < 1 or i > size then return nil end
-  local max = storage.tx_max_events or 500000
+  local max = storage.tx_max_events or Config.get_tx_max_events()
   local head = storage.tx_head or 1
   local phys = ((head + (i - 1) - 1) % max) + 1
   return storage.tx_events and storage.tx_events[phys] or nil
@@ -416,14 +424,15 @@ local function push_event(ev)
   ev.id = storage.tx_seq
 
   local t   = storage.tx_events
-  local max = storage.tx_max_events or 500000
+  local max = storage.tx_max_events or Config.get_tx_max_events()
   local w   = storage.tx_write or 1
   local size = storage.tx_size or 0
 
   t[w] = ev
 
-  -- update running balances for virtual buffers (T00/SHIP/RECV/WIP)
-  if ev and (ev.obj == "T00" or ev.obj == "SHIP" or ev.obj == "RECV" or ev.obj == "WIP") then
+  -- update running balances for virtual buffers (T00/SHIP/RECV/WIP/MAN)
+  if ev and (ev.obj == "T00" or ev.obj == "SHIP" or ev.obj == "RECV"
+             or ev.obj == "WIP" or ev.obj == "MAN") then
     local cnt = tonumber(ev.cnt) or 0
     if cnt ~= 0 then
       if ev.kind == "GIVE" then
@@ -1066,8 +1075,7 @@ end
 function Transaction.on_tick(tick)
   ensure_defaults()
 
-  if not storage.tx_active then return end
-
+  -- Gate lives in control.lua (protocol_active). No second flag needed here.
   tick = tick or game.tick
 
   -- periodic rebuild
@@ -1127,6 +1135,8 @@ end
 -- so the built-in text-box scroll bar becomes irrelevant.
 local TX_WINDOW_LINES = 24  -- measured in UI: exactly 25 lines fit
 
+-- Transaction.tx_line_count is the single public API for the event count.
+-- Internal callers use the local tx_count() below (defined after the viewer helpers).
 function Transaction.tx_line_count()
   ensure_defaults()
   tx_rb_ensure()
@@ -1137,12 +1147,6 @@ function Transaction.tx_get_event(i)
   ensure_defaults()
   tx_rb_ensure()
   return tx_rb_get_event(i)
-end
-
-function Transaction.tx_count()
-  ensure_defaults()
-  tx_rb_ensure()
-  return (storage.tx_size or 0)
 end
 
 function Transaction.tx_get_line(i, surface)
@@ -1461,7 +1465,7 @@ function Transaction.reset_tx_log()
   -- Clear only the TX event log + viewer state.
   -- IMPORTANT: keep active inserter markings (green) and inserter IDs stable.
   storage.tx_events = {}
-  storage.tx_virtual = { T00 = {}, SHIP = {}, RECV = {}, WIP = {} }
+  storage.tx_virtual = { T00 = {}, SHIP = {}, RECV = {}, WIP = {}, MAN = {} }
 
   -- NEW: clear WIP mode flags
   storage.tx_wip_inserters = {}
