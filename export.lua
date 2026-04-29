@@ -12,7 +12,6 @@
 -- =========================================
 
 local M = require("config")
-local UI = require("ui")
 local Buffer = require("buffer")
 local Transaction = require("transaction")
 local Util = require("utility")
@@ -70,7 +69,7 @@ function Export.export_tx_csv(player)
   local tx_n = (Transaction.tx_line_count() or 0)
   if tx_n == 0 then
     player.print({"logistics_simulation.export_no_data"})
-    return
+    return false
   end
 
   local filename = get_export_filename(player)
@@ -91,6 +90,8 @@ function Export.export_tx_csv(player)
 
   local content = table.concat(lines, "\n")
 
+-- Factorio 2.x: file export is sandboxed to script-output.
+-- Use helpers.write_file; game.write_file is Factorio 1.x-era and not available in 2.x.
   local ok, err = pcall(function()
     helpers.write_file(filepath, content)
   end)
@@ -100,8 +101,8 @@ function Export.export_tx_csv(player)
   else
     player.print({"logistics_simulation.export_failed", tostring(err)})
   end
+  return ok
 
-  UI.close_export_dialog(player)
 end
 
 -- =========================================
@@ -113,7 +114,7 @@ function Export.export_tx_json(player)
   local tx_n = (Transaction.tx_line_count() or 0)
   if tx_n == 0 then
     player.print({"logistics_simulation.export_no_data"})
-    return
+    return false
   end
 
   local filename = get_export_filename(player)
@@ -142,8 +143,8 @@ function Export.export_tx_json(player)
   else
     player.print({"logistics_simulation.export_failed", tostring(err)})
   end
+  return ok
 
-  UI.close_export_dialog(player)
 end
 
 
@@ -229,24 +230,24 @@ function Export.export_inv_csv(player)
   local tabs = get_inv_tabs(player)
   if not inv_tabs_have_data(tabs) then
     player.print({"logistics_simulation.export_no_data"})
-    return
-  end
+    return false
+  end 
 
   local filename = get_export_filename(player)
   local filepath = M.EXPORT_FOLDER .. "/" .. filename .. ".csv"
   local content = inv_tabs_to_text(tabs)
 
-  local success, err = pcall(function()
+  local ok, err = pcall(function()
     helpers.write_file(filepath, content)
   end)
 
-  if success then
+  if ok then
     player.print({"logistics_simulation.export_success", filepath, #INV_EXPORT_ORDER})
   else
     player.print({"logistics_simulation.export_failed", tostring(err)})
   end
+  return ok
 
-  UI.close_export_dialog(player)
 end
 
 function Export.export_inv_json(player)
@@ -255,7 +256,7 @@ function Export.export_inv_json(player)
   local tabs = get_inv_tabs(player)
   if not inv_tabs_have_data(tabs) then
     player.print({"logistics_simulation.export_no_data"})
-    return
+    return false
   end
 
   local filename = get_export_filename(player)
@@ -281,17 +282,16 @@ function Export.export_inv_json(player)
 
   local json_str = Export.table_to_json(data)
 
-  local success, err = pcall(function()
+  local ok, err = pcall(function()
     helpers.write_file(filepath, json_str)
   end)
 
-  if success then
+  if ok then
     player.print({"logistics_simulation.export_success", filepath, #INV_EXPORT_ORDER})
   else
     player.print({"logistics_simulation.export_failed", tostring(err)})
   end
-
-  UI.close_export_dialog(player)
+  return ok
 end
 
 -- Export as CSV (raw protocol format)
@@ -301,7 +301,7 @@ function Export.export_csv(player)
   local lines, line_count = Buffer.snapshot_lines()
   if line_count == 0 then
     player.print({"logistics_simulation.export_no_data"})
-    return
+    return false
   end
   
   local filename = get_export_filename(player)
@@ -310,17 +310,17 @@ function Export.export_csv(player)
   local content = table.concat(lines, "\n")
   
   -- Use helpers.write_file (Factorio 2.0+)
-  local success, err = pcall(function()
+  local ok, err = pcall(function()
     helpers.write_file(filepath, content)
   end)
   
-  if success then
+  if ok then
     player.print({"logistics_simulation.export_success", filepath, #lines})
   else
     player.print({"logistics_simulation.export_failed", tostring(err)})
   end
-  
-  UI.close_export_dialog(player)
+  return ok  
+
 end
 
 -- Export as JSON (structured format)
@@ -330,7 +330,7 @@ function Export.export_json(player)
   local lines, line_count = Buffer.snapshot_lines()
   if line_count == 0 then
     player.print({"logistics_simulation.export_no_data"})
-    return
+    return false
   end
   
   -- Build JSON structure (without os.date - not available in Factorio!)
@@ -357,17 +357,17 @@ function Export.export_json(player)
   local filepath = M.EXPORT_FOLDER .. "/" .. filename .. ".json"
   
   -- Use helpers.write_file (Factorio 2.0+)
-  local success, err = pcall(function()
+  local ok, err = pcall(function()
     helpers.write_file(filepath, json_str)
   end)
   
-  if success then
+  if ok then
     player.print({"logistics_simulation.export_success", filepath, #lines})
   else
     player.print({"logistics_simulation.export_failed", tostring(err)})
   end
-  
-  UI.close_export_dialog(player)
+  return ok
+
 end
 
 
@@ -395,6 +395,9 @@ function Export.serialize_registry(registry)
 end
 
 -- Simple JSON encoder (handles basic types)
+-- NOTE: Lua cannot distinguish an empty array from an empty object.
+-- Empty tables are serialized as JSON objects ({}) by this generic encoder.
+-- List-like fields that must export [] need explicit handling before calling this function.
 function Export.table_to_json(tbl, indent)
   indent = indent or 0
   local indent_str = string.rep("  ", indent)

@@ -73,7 +73,7 @@ local function tick_to_parts(tick, tpd, surface)
 
   local day = math.floor( (tick + tpd/4) / tpd) + 1
   
-  -- HOL EINFACH DAYTIME VOM SURFACE!
+-- Use surface.daytime directly for accurate in-game time of day.
   local day_frac = 0
   if surface then
     if surface.valid then
@@ -141,19 +141,13 @@ function Util.to_excel_datetime(tick, surface, base_date)
   )
 end
 
--- Excel-friendly datetime string: "YYYY-MM-DD HH:MM:SS"
--- Excel ist mit Leerzeichen oft weniger zickig als mit "T...Z".
-function Util.to_excel_daystime(tick, surface, base_date)
-  local y0, m0, d0 = parse_base_date(base_date)
-  local base_days_1970 = days_from_civil(y0, m0, d0)
+-- Excel-friendly relative day/time string: "days N HH:MM"
+-- base_date is intentionally not used here; use to_excel_datetime() for absolute dates.
+function Util.to_excel_daystime(tick, surface)
   local tpd = get_tpd(surface)
-  local day, _, hh, mm, ss, _ = tick_to_parts(tick, tpd, surface)
-
-  local z1970 = (day - 1)
-
-  return string.format(" days %s %s:%s", z1970, pad2(hh), pad2(mm) )
+  local day, _, hh, mm = tick_to_parts(tick, tpd, surface)
+  return string.format(" days %s %s:%s", (day - 1), pad2(hh), pad2(mm))
 end
-
 
 -- =========================================
 -- Helper: Flying Text

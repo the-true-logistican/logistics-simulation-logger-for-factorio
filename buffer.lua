@@ -57,6 +57,9 @@ local function buf_rb_get_line(i)
   return storage.buffer_lines[p]
 end
 
+-- Resize is intentionally performed lazily here.
+-- Normal append/read calls only check the sentinel; O(n) copying happens
+-- only when the configured buffer size changes or after reset/migration.
 local function buf_rb_resize(new_max)
   new_max = tonumber(new_max) or buf_rb_get_max()
   if new_max < 1 then new_max = 1 end
@@ -114,6 +117,19 @@ end
 -- -----------------------------------------
 -- Basics
 -- -----------------------------------------
+
+function Buffer.reset_log()
+  Buffer.ensure_defaults()
+
+  storage.buffer_lines = {}
+  storage.buffer_head = 1
+  storage.buffer_size = 0
+  storage._buffer_last_max = nil
+
+  storage.buffer_view = {}
+  storage.gui_dirty = {}
+  storage.perline_counter = 0
+end
 
 function Buffer.count()
   Buffer.ensure_defaults()

@@ -13,7 +13,7 @@ data:extend({
     priority = "extra-high-no-scale",
     width = 32,
     height = 32,
-    mipmap_count = 2,
+    mipmap_count = 1,
     flags = {"gui-icon"}
   },
   {
@@ -23,7 +23,7 @@ data:extend({
     priority = "extra-high-no-scale",
     width = 32,
     height = 32,
-    mipmap_count = 2,
+    mipmap_count = 1,
     flags = {"gui-icon"}
   },
   {
@@ -33,7 +33,7 @@ data:extend({
     priority = "extra-high-no-scale",
     width = 32,
     height = 32,
-    mipmap_count = 2,
+    mipmap_count = 1,
     flags = {"gui-icon"}
   },
   {
@@ -43,7 +43,7 @@ data:extend({
     priority = "extra-high-no-scale",
     width = 32,
     height = 32,
-    mipmap_count = 2,
+    mipmap_count = 1,
     flags = {"gui-icon"}
   },
   {
@@ -53,7 +53,7 @@ data:extend({
     priority = "extra-high-no-scale",
     width = 32,
     height = 32,
-    mipmap_count = 2,
+    mipmap_count = 1,
     flags = {"gui-icon"}
   }
 })

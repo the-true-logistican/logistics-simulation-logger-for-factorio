@@ -91,6 +91,9 @@ local function read_chest_contents(ent)
   local contents = inv.get_contents()
   if not contents then return result end
 
+-- Factorio 2.x: get_contents() returns array entries like
+-- { name = ..., count = ..., quality = ... }.
+-- The string/table-key branches are kept as defensive compatibility fallbacks.
   for k, v in pairs(contents) do
     local item_name, count
 
@@ -245,7 +248,7 @@ function EMA.update(snapshot, tick)
   EMA.ensure_defaults()
 
   local af = EMA.alpha_fast()
-  local as_ = EMA.alpha_slow()     -- 'as' ist Lua-Keyword in manchen Versionen → as_
+  local as_ = EMA.alpha_slow()  
   local bf = 1.0 - af
   local bs = 1.0 - as_
 

@@ -451,8 +451,8 @@ function M.ensure_storage_defaults(st)
 -- virtual buffers derived from TX postings (running balances)
   st.tx_virtual = st.tx_virtual or {
     T00  = {}, -- transition
-    SHIP = {}, -- shipmewnt
-    RECV = {}, -- reveive
+    SHIP = {}, -- shipment
+    RECV = {}, -- receive
     WIP  = {}, -- work in progress
     MAN  = {}, -- manual work
   }

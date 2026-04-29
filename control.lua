@@ -73,7 +73,6 @@ local PROVIDER_API = "logistics_events_api"
 -- Forward declarations
 local ensure_storage_defaults
 local maybe_prompt_runname_for_all_players
-local resolve_entity
 local cleanup_entity_from_registries
 local clear_invalid_rendering_objects
 
@@ -112,23 +111,9 @@ local function try_register_logistics_events()
     return true
 end
 
-
 -- -----------------------------------------
 -- Helper Functions
 -- -----------------------------------------
-
-resolve_entity = function(rec)
-  local surface = game.get_surface(rec.surface_index)
-  if not surface then return nil end
-  
-  local found = surface.find_entities_filtered{
-    name = rec.name,
-    position = rec.position,
-    limit = 1
-  }
-  return (found and found[1]) or nil
-end
-
 
 ensure_storage_defaults = function()
   M.ensure_storage_defaults(storage)
@@ -276,6 +261,7 @@ end
 -- NEW: Shift+U - if inserter is selected, clear active marking (back to yellow)
 local function hotkey_unregister_selected(event)
   local player = game.players[event.player_index]
+  if not (player and player.valid) then return end
   local ent = player.selected
 
   if ent and ent.valid and ent.type == "inserter" and ent.unit_number then
@@ -312,7 +298,6 @@ end
 script.on_init(function()
     -- Setze Flag, dass wir beim nächsten Tick registrieren müssen
     needs_registration = true
-    event_registry = Registry.new()
 
   init_storage()
   Util.debug_print({"logistics_simulation.mod_initialised"})
@@ -331,7 +316,6 @@ end)
 script.on_configuration_changed(function(data)
     -- Setze Flag, dass wir beim nächsten Tick registrieren müssen
     needs_registration = true
-    event_registry = Registry.new()
 
   init_storage()
   local mod_changes = data.mod_changes and data.mod_changes["logistics_simulation"]
@@ -357,7 +341,6 @@ end)
 script.on_load(function()
     -- Setze Flag, dass wir beim nächsten Tick registrieren müssen
     needs_registration = true
-    event_registry = Registry.new()
 
   _needs_marker_refresh_after_load = true
   _needs_UI_time_Window = true
@@ -529,7 +512,7 @@ local function tick_build_and_append_logline()
       goto continue
     end
     
-    local force = game.forces.player
+    local force = game.forces["player"]
     if not force or not force.valid then
       goto continue
     end
@@ -537,11 +520,11 @@ local function tick_build_and_append_logline()
     local parts = SimLog.begin_telegram(tick, surface, force)
     
     local chest_str = SimLog.build_string_for_surface(
-      storage.registry, surf_idx, resolve_entity, SimLog.encode_chest)
+      storage.registry, surf_idx, Chests.resolve_entity, SimLog.encode_chest)
     if chest_str ~= "" then parts[#parts+1] = chest_str end
     
     local machine_str = SimLog.build_string_for_surface(
-      storage.machines, surf_idx, resolve_entity, SimLog.encode_machine)
+      storage.machines, surf_idx, Chests.resolve_entity, SimLog.encode_machine)
     if machine_str ~= "" then parts[#parts+1] = machine_str end
     
     SimLog.append_virtual_buffers(parts) 

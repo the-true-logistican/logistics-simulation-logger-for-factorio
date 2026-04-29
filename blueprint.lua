@@ -15,7 +15,6 @@
 local UI = require("ui")
 local ItemCost = require("itemcost")
 local Chests = require("chests")
-local SimLog = require("simlog")
 local EMA = require("ema")
 
 

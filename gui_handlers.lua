@@ -222,24 +222,32 @@ end
 function GUI.click_export_csv(event)
   local player = game.players[event.player_index]
   local mode = storage.export_mode and storage.export_mode[player.index]
+  local ok = false
   if mode == "tx" then
-    Export.export_tx_csv(player)
+    ok = Export.export_tx_csv(player)
   elseif mode == "inv" then
-    Export.export_inv_csv(player)
+    ok = Export.export_inv_csv(player)
   else
-    Export.export_csv(player)
+    ok = Export.export_csv(player)
+  end
+  if ok then
+    UI.close_export_dialog(player)
   end
 end
 
 function GUI.click_export_json(event)
   local player = game.players[event.player_index]
   local mode = storage.export_mode and storage.export_mode[player.index]
+  local ok = false
   if mode == "tx" then
-    Export.export_tx_json(player)
+    ok = Export.export_tx_json(player)
   elseif mode == "inv" then
-    Export.export_inv_json(player)
+    ok = Export.export_inv_json(player)
   else
-    Export.export_json(player)
+    ok = Export.export_json(player)
+  end
+  if ok then
+    UI.close_export_dialog(player)
   end
 end
 
@@ -344,14 +352,7 @@ function GUI.click_reset_ok(event)
   end
 
   if opts.del_log then
-    storage.buffer_lines = {}
-    storage.perline_counter = 0
-    storage.buffer_view = {}
-    storage.gui_dirty = {}
-
-    storage.buffer_head = 1
-    storage.buffer_size = 0
-    storage._buffer_last_max = nil
+    Buffer.reset_log()
 
     storage.run_start_tick = game.tick
 
@@ -394,12 +395,7 @@ function GUI.click_buffer_nav(event, element)
     return
   end
 
-  local view = storage.buffer_view[player.index]
-  if not view then
-    local s, e = Buffer.compute_tail_window(M.TEXT_MAX)
-    view = { start_line = s, end_line = e, follow = true }
-    storage.buffer_view[player.index] = view
-  end
+  local view = Buffer.ensure_view(player.index)
 
   if element.name == M.GUI_BTN_TAIL and not storage.protocol_active then
     view.follow = false

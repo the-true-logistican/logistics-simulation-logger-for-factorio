@@ -16,6 +16,8 @@ R.version = "0.9.0"
 
 -- FIX: Added validity check for power switches
 local function set_factory_power(surface, state)
+  if not (surface and surface.valid) then return end
+
   local switches = surface.find_entities_filtered{name = "power-switch"}
   for _, switch in pairs(switches) do
     if switch.valid then

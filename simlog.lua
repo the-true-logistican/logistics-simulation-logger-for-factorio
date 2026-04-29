@@ -10,8 +10,6 @@
 -- =========================================
 
 local M = require("config")
-local UI = require("ui")
-local Chests = require("chests")
 local Util = require("utility")
 
 local SimLog = {}
