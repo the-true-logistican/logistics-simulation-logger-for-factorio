@@ -3,7 +3,8 @@
 -- GUI Click Handler - alle onClick-Funktionen zentralisiert
 --
 -- version 0.8.7 new introduced
---
+--               extract from blueprint with tabs
+-- Version 0.9.0 Stable Ledger Operational Baseline 
 -- =========================================
 
 local M = require("config")
@@ -15,10 +16,11 @@ local Blueprint = require("blueprint")
 local Export = require("export")
 local Transaction = require("transaction")
 local SimLog = require("simlog")
-local mod_gui = require("mod-gui")  
+local mod_gui = require("mod-gui") 
+local EMA = require("ema") 
 
 local GUI = {}
-GUI.version = "0.8.7"
+GUI.version = "0.9.0"
 
 
 -- =========================================
@@ -321,6 +323,10 @@ function GUI.click_reset_ok(event)
   UI.close_reset_dialog(player)
   if not opts then return end
 
+  if opts.new_name and opts.new_name ~= "" then
+    storage.run_name = opts.new_name
+  end
+
   if opts.del_items then
     R.do_reset_simulation(player.surface, player.force, Buffer.append_line, opts.del_stats)
   end
@@ -362,13 +368,20 @@ function GUI.click_reset_ok(event)
     Buffer.append_multiline(header)
   end
 
-  if opts.new_name and opts.new_name ~= "" then
-    storage.run_name = opts.new_name
+  local did_reset =
+    opts.del_items
+    or opts.del_playerinv
+    or opts.del_chests
+    or opts.del_machines
+    or opts.del_prot
+    or opts.del_log
+
+  if did_reset and EMA and EMA.reset_to_current then
+    EMA.reset_to_current(player.surface.index, game.tick)
   end
 
   Buffer.refresh_for_player(player)
 end
-
 -- =========================================
 -- Buffer Navigation
 -- =========================================
@@ -457,6 +470,32 @@ function GUI.click_help_close(event)
   local player = game.players[event.player_index]
   local hf = player.gui.screen[M.GUI_HELP_FRAME]
   if hf and hf.valid then hf.destroy() end
+end
+
+-- =========================================
+-- Tabs in Window handlers
+-- =========================================
+
+function GUI.click_invwin_tab(event, element)
+  local player = game.players[event.player_index]
+  if not (player and player.valid and element and element.valid) then return false end
+
+  if element.name == M.GUI_INV_TAB_ASSETS then
+    storage.invwin_active_tab[player.index] = "assets"
+  elseif element.name == M.GUI_INV_TAB_COSTS then
+    storage.invwin_active_tab[player.index] = "costs"
+  elseif element.name == M.GUI_INV_TAB_SYSTEM then
+    storage.invwin_active_tab[player.index] = "system"
+  elseif element.name == M.GUI_INV_TAB_STATS then
+    storage.invwin_active_tab[player.index] = "stats"
+  elseif element.name == M.GUI_INV_TAB_WC then
+    storage.invwin_active_tab[player.index] = "working_capital"
+  else
+    return false
+  end
+
+  UI.refresh_inventory_window(player)
+  return true
 end
 
 -- =========================================

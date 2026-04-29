@@ -13,12 +13,15 @@
 -- Version 0.8.6 Reset clears players inventory too
 --               Simple Days-Time-Clock
 -- Version 0.8.7 Setup Parameters corrected
+-- Version 0.8.8 EMA Module – Exponential Moving Average Curretn Assets
+--               extract from blueprint with tabs
+-- Version 0.9.0 Stable Ledger Operational Baseline 
 --
 -- =========================================
 
 local M = {}
 
-M.version = "0.8.7"
+M.version = "0.9.0"
 
 M.DEBUG = true
 
@@ -34,10 +37,13 @@ M.DEBUG = true
 -- M.BUFFER_MAX_LINES = 5000    -- max number of complete inventory
 -- M.TX_MAX_EVENTS = 50000     -- max number of transaction records kept in memory
 
+
 M.SETTING_KEYS = {
     BUFFER_MAX = "logsim_buffer_max_lines",
     TX_MAX     = "logsim_tx_max_events",
-    INTERVAL   = "logsim_sample_interval_ticks"
+    INTERVAL   = "logsim_sample_interval_ticks",
+    EMA_ALPHA_FAST = "logsim_ema_alpha_fast",
+    EMA_ALPHA_SLOW = "logsim_ema_alpha_slow"
 }
 
 function M.get_buffer_limit()
@@ -49,7 +55,12 @@ end
 function M.get_sample_interval_ticks()
     return settings.global[M.SETTING_KEYS.INTERVAL].value
 end
-
+function M.get_ema_alpha_fast()
+  return settings.global["logsim_ema_alpha_fast"].value
+end
+function M.get_ema_alpha_slow()
+  return settings.global["logsim_ema_alpha_slow"].value
+end
 
 -- End Parameters from Setup
 
@@ -160,6 +171,15 @@ M.GUI_BTN_TAIL  = "logsim_buffer_tail"
 M.GUI_BTN_NEWER = "logsim_buffer_newer"
 M.GUI_LBL_RANGE = "logsim_buffer_range"
 
+
+M.GUI_INV_TABS       = "logsim_inv_tabs"
+M.GUI_INV_TAB_ASSETS = "logsim_inv_tab_assets"
+M.GUI_INV_TAB_COSTS  = "logsim_inv_tab_costs"
+M.GUI_INV_TAB_SYSTEM = "logsim_inv_tab_system"
+M.GUI_INV_TAB_STATS  = "logsim_inv_tab_stats"
+M.GUI_INV_TAB_WC     = "logsim_inv_tab_wc"
+M.GUI_INV_ACTIVE_TAB_STYLE   = "confirm_button"
+M.GUI_INV_INACTIVE_TAB_STYLE = "button"
 
 -- TX Window (Transactions)
 M.GUI_BTN_TX_OPEN = "logsim_buffer_tx_open"
@@ -437,9 +457,13 @@ function M.ensure_storage_defaults(st)
     MAN  = {}, -- manual work
   }
 
- -- NEU: Toggle-States für Topbar-Buttons
-  -- Entfernt: ls_toggle2_state / ls_toggle3_state (tote Felder; echter State liegt in
-  -- storage.protocol_active und storage.gp_enabled)
+-- EMA (exponential moving average über Bestände)
+  if st.ema == nil then
+    st.ema = { _last_tick = 0 }
+  end
+  if st.ema._last_tick == nil then
+    st.ema._last_tick = 0
+  end
 
   return st
 end

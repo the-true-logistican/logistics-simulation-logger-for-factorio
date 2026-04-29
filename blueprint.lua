@@ -5,6 +5,10 @@
 -- version 0.8.0 first complete working version
 -- version 0.8.1 Blueprint.ui_front_tick_handler()
 -- version 0.8.2 factory stats block (Teil 3): scenario, mods, power, pollution
+-- version 0.8.3 EMA Module – Exponential Moving Average über Bestände
+-- version 0.8.4 extract from blueprint with tabs
+--               compatibility extract from bleuprintbook
+-- Version 0.9.0 Stable Ledger Operational Baseline 
 --
 -- =========================================
 
@@ -12,9 +16,11 @@ local UI = require("ui")
 local ItemCost = require("itemcost")
 local Chests = require("chests")
 local SimLog = require("simlog")
+local EMA = require("ema")
+
 
 local Blueprint = {}
-  Blueprint.version = "0.8.2"
+  Blueprint.version = "0.9.0"
 
 -- Session storage (not persistent)
 local bp_session = {
@@ -276,54 +282,69 @@ function Blueprint.extract_counts_from_blueprint(stack)
 end
 
 -- Extrahiert alle Blueprints aus einem Buch
+-- Rückgabe kompatibel zu extract_counts_from_blueprint:
+--   counts, footprint, produced
+--
+-- Hinweis:
+--   Für ein Blueprint-Book gibt es keinen eindeutigen gemeinsamen Footprint,
+--   weil die enthaltenen Blueprints nicht in einem gemeinsamen Koordinatensystem
+--   platziert sind. Deshalb bleibt footprint bewusst nil.
 function Blueprint.extract_counts_from_book(book_stack)
   local counts = {}
+  local produced = {}
+  local footprint = nil
 
   -- Guard: Check book validity
   if not book_stack then
     safe_log("extract_book: book_stack is nil")
-    return counts
+    return counts, footprint, produced
   end
 
   local ok, is_valid = pcall(function() return book_stack.valid_for_read end)
   if not ok or not is_valid then
     safe_log("extract_book: book not valid_for_read")
-    return counts
+    return counts, footprint, produced
   end
 
   local ok2, is_book = pcall(function() return book_stack.is_blueprint_book end)
   if not ok2 or not is_book then
     safe_log("extract_book: not a blueprint book")
-    return counts
+    return counts, footprint, produced
   end
 
   -- Safe inventory access
   local ok3, inv = pcall(function()
     return book_stack.get_inventory(defines.inventory.item_main)
   end)
-  
+
   if not ok3 or not inv then
     safe_log("extract_book: failed to get inventory")
-    return counts
+    return counts, footprint, produced
   end
 
   -- Process each blueprint in book
   for i = 1, #inv do
     local ok4, st = pcall(function() return inv[i] end)
-    
+
     if ok4 and st then
       local ok5, valid = pcall(function() return st.valid_for_read end)
       local ok6, is_bp = pcall(function() return st.is_blueprint end)
       local ok7, is_setup = pcall(function() return st.is_blueprint_setup() end)
-      
+
       if ok5 and valid and ok6 and is_bp and ok7 and is_setup then
-        local ok8, c = pcall(function()
+        local ok8, c, _fp, prod = pcall(function()
           return Blueprint.extract_counts_from_blueprint(st)
         end)
-        
+
         if ok8 and c then
           for name, amt in pairs(c) do
             Blueprint.inv_add(counts, name, amt)
+          end
+
+          for name, flag in pairs(prod or {}) do
+            if flag then
+              produced[name] = true
+            end
           end
         else
           safe_log("extract_book: error extracting blueprint " .. i .. " - " .. tostring(c))
@@ -332,8 +353,11 @@ function Blueprint.extract_counts_from_book(book_stack)
     end
   end
 
-  return counts
+  return counts, footprint, produced
 end
+
+
+
 
 function Blueprint.ui_front_tick_handler()
   if not storage or not storage._ui_front_tick then return end
@@ -344,6 +368,307 @@ function Blueprint.ui_front_tick_handler()
       storage._ui_front_tick[pidx] = nil
     end
   end
+end
+
+-- =========================================
+-- REPORT BLOCK BUILDERS
+-- =========================================
+
+local function build_assets_text(costs, player)
+  local ok, fixed_txt = pcall(function()
+    return ItemCost.format_detailed_breakdown(costs, player)
+  end)
+
+  if ok then
+    return fixed_txt or "", true
+  end
+
+  safe_log("build_assets_text: format failed - " .. tostring(fixed_txt))
+  return "# FIXED ASSETS ERROR: " .. tostring(fixed_txt), false
+end
+
+local function is_valid_report_item_key(name)
+  if not name then return false end
+  if type(name) ~= "string" then return false end
+  if name:sub(1, 5) == "tile:" then return false end
+  if prototypes.item and prototypes.item[name] then return true end
+  if prototypes.fluid and prototypes.fluid[name] then return true end
+  return false
+end
+
+local function build_costs_text(counts, produced, player)
+  local master_set = {}
+
+  -- 1) Blueprint fixed assets (counts keys)
+  for name, _ in pairs(counts or {}) do
+    if is_valid_report_item_key(name) then
+      master_set[name] = true
+    end
+  end
+
+  -- 2) Produced items from blueprint recipes
+  for name, _ in pairs(produced or {}) do
+    if is_valid_report_item_key(name) then
+      master_set[name] = true
+    end
+  end
+
+  -- 3) Current factory portfolio
+  local okP, portfolio_set = pcall(function()
+    return ItemCost.collect_portfolio_items(storage, Chests.resolve_entity, player.force)
+  end)
+
+  if okP and portfolio_set then
+    for name, _ in pairs(portfolio_set) do
+      if is_valid_report_item_key(name) then
+        master_set[name] = true
+      end
+    end
+  else
+    safe_log("build_costs_text: collect_portfolio_items failed - " .. tostring(portfolio_set))
+  end
+
+  local okE, expanded = pcall(function()
+    return ItemCost.expand_item_set_full(master_set, player.force)
+  end)
+
+  if not okE or not expanded then
+    safe_log("build_costs_text: expand_item_set_full failed - " .. tostring(expanded))
+    return "# ITEM/COSTS ERROR: " .. tostring(expanded)
+  end
+
+  if next(expanded) == nil then
+    return "# ITEM/COSTS: no valid item data"
+  end
+
+  local okU, unit_costs = pcall(function()
+    return ItemCost.calculate_unit_costs(expanded, player.force)
+  end)
+
+  if not okU or not unit_costs then
+    safe_log("build_costs_text: calculate_unit_costs failed - " .. tostring(unit_costs))
+    return "# ITEM/COSTS ERROR: " .. tostring(unit_costs)
+  end
+
+  local okF, out = pcall(function()
+    return ItemCost.format_masterdata_unit_costs(unit_costs)
+  end)
+
+  if okF and out then
+    return out
+  end
+
+  safe_log("build_costs_text: format_masterdata_unit_costs failed - " .. tostring(out))
+  return "# ITEM/COSTS ERROR: " .. tostring(out)
+end
+
+local function build_system_text(player)
+  local lines = {}
+
+  lines[#lines + 1] = "# ----"
+  lines[#lines + 1] = "# SYSTEM/MODS (tick=" .. tostring(game.tick) .. ")"
+
+  local ok_lvl, lvl = pcall(function()
+    return script.level
+  end)
+
+  if ok_lvl and lvl then
+    local sname = tostring(lvl.level_name or "unknown")
+    local cname = tostring(lvl.campaign_name or "")
+    local mname = tostring(lvl.mod_name or "base")
+
+    if cname ~= "" then
+      lines[#lines + 1] = "# scenario=" .. sname .. "  campaign=" .. cname .. "  provided_by=" .. mname
+    else
+      lines[#lines + 1] = "# scenario=" .. sname .. "  provided_by=" .. mname
+    end
+  else
+    lines[#lines + 1] = "# scenario=NA"
+  end
+
+  local run_name = (storage and storage.run_name) or ""
+  lines[#lines + 1] = "# run_name=" .. (run_name ~= "" and run_name or "(not set)")
+
+  if player and player.valid then
+    lines[#lines + 1] = "# player=" .. tostring(player.name)
+    lines[#lines + 1] = "# surface=" .. tostring(player.surface and player.surface.name or "NA")
+    lines[#lines + 1] = "# force=" .. tostring(player.force and player.force.name or "NA")
+  end
+
+  lines[#lines + 1] = "# ----"
+  lines[#lines + 1] = "# ACTIVE_MODS"
+  lines[#lines + 1] = "# id;mod_name;version"
+
+  local ok_mods, mods = pcall(function()
+    return script.active_mods
+  end)
+
+  if ok_mods and mods then
+    local mod_list = {}
+    for name, version in pairs(mods) do
+      mod_list[#mod_list + 1] = {
+        name = name,
+        version = tostring(version)
+      }
+    end
+
+    table.sort(mod_list, function(a, b)
+      return a.name < b.name
+    end)
+
+    for i, e in ipairs(mod_list) do
+      lines[#lines + 1] = string.format("%d;%s;%s", i, e.name, e.version)
+    end
+  else
+    lines[#lines + 1] = "NA"
+  end
+
+  return table.concat(lines, "\n")
+end
+
+local function safe_stats_flow(stats, name, category, precision)
+  local ok, v = pcall(function()
+    return stats.get_flow_count{
+      name            = name,
+      category        = category,
+      precision_index = precision,
+    }
+  end)
+  return (ok and v) and v or 0
+end
+
+local function read_stats_flows(stats, precision)
+  if not stats then return {} end
+  local result = {}
+
+  for name, _ in pairs(stats.input_counts or {}) do
+    local v = safe_stats_flow(stats, name, "input", precision)
+    if not result[name] then result[name] = { produced = 0, consumed = 0 } end
+    result[name].produced = v
+  end
+
+  for name, _ in pairs(stats.output_counts or {}) do
+    local v = safe_stats_flow(stats, name, "output", precision)
+    if not result[name] then result[name] = { produced = 0, consumed = 0 } end
+    result[name].consumed = v
+  end
+
+  return result
+end
+
+local function sorted_stats_pairs(tbl)
+  local keys = {}
+  for k in pairs(tbl or {}) do keys[#keys + 1] = k end
+  table.sort(keys)
+  local i = 0
+  return function()
+    i = i + 1
+    if keys[i] then return keys[i], tbl[keys[i]] end
+  end
+end
+
+local function append_stats_block(lines, surface, force, precision, title)
+  lines[#lines + 1] = "# ----"
+  lines[#lines + 1] = title
+  lines[#lines + 1] = "# category;name;produced;consumed;delta"
+
+  -- Pollution: surface-based
+  if surface and surface.valid and surface.pollution_statistics then
+    local pol_data = read_stats_flows(surface.pollution_statistics, precision)
+    local pol_prod, pol_cons = 0.0, 0.0
+    for _, v in pairs(pol_data) do
+      pol_prod = pol_prod + (v.produced or 0)
+      pol_cons = pol_cons + (v.consumed or 0)
+    end
+    lines[#lines + 1] = string.format("POLLUTION;;%.2f;%.2f;%.2f", pol_prod, pol_cons, pol_prod - pol_cons)
+  end
+
+  -- Items: force + surface based, Factorio 2.x API
+  if force and force.valid and surface and surface.valid then
+    local ok_is, item_stats = pcall(function()
+      return force.get_item_production_statistics(surface)
+    end)
+    if ok_is and item_stats then
+      local items = read_stats_flows(item_stats, precision)
+      for name, v in sorted_stats_pairs(items) do
+        lines[#lines + 1] = string.format("ITEM;%s;%.1f;%.1f;%.1f", name, v.produced, v.consumed, v.produced - v.consumed)
+      end
+    end
+  end
+
+  -- Fluids: force + surface based, Factorio 2.x API
+  if force and force.valid and surface and surface.valid then
+    local ok_fs, fluid_stats = pcall(function()
+      return force.get_fluid_production_statistics(surface)
+    end)
+    if ok_fs and fluid_stats then
+      local fluids = read_stats_flows(fluid_stats, precision)
+      for name, v in sorted_stats_pairs(fluids) do
+        lines[#lines + 1] = string.format("FLUID;%s;%.1f;%.1f;%.1f", name, v.produced, v.consumed, v.produced - v.consumed)
+      end
+    end
+  end
+end
+
+local function build_stats_text(player)
+  local lines = {}
+  lines[#lines + 1] = "# ----"
+  lines[#lines + 1] = "# STATISTICS (tick=" .. tostring(game.tick) .. ")"
+
+  if not (player and player.valid and player.surface and player.surface.valid) then
+    lines[#lines + 1] = "# (no valid player/surface)"
+    return table.concat(lines, "\n")
+  end
+
+  append_stats_block(
+    lines,
+    player.surface,
+    player.force,
+    defines.flow_precision_index.ten_minutes,
+    "# STATISTICS_10MIN (precision=10min)"
+  )
+
+  append_stats_block(
+    lines,
+    player.surface,
+    player.force,
+    defines.flow_precision_index.one_hour,
+    "# STATISTICS_1H (precision=1h)"
+  )
+
+  return table.concat(lines, "\n")
+end
+
+local function build_working_capital_text(player)
+  local ok_ema, result_ema = pcall(function()
+    return EMA.format_display(game.tick, player.surface)
+  end)
+
+  local ema_count = 0
+  if storage.ema then
+    for k, _ in pairs(storage.ema) do
+      if type(k) == "string" and k:sub(1, 1) ~= "_" then
+        ema_count = ema_count + 1
+      end
+    end
+  end
+
+  safe_log(string.format("EMA diag: ok=%s entries=%d last_tick=%s",
+    tostring(ok_ema),
+    ema_count,
+    tostring(storage.ema and storage.ema._last_tick or "nil")
+  ))
+
+  if ok_ema and result_ema and result_ema ~= "" then
+    return result_ema
+  end
+
+  if not ok_ema then
+    safe_log("build_working_capital_text: EMA.format_display failed - " .. tostring(result_ema))
+    return "# EMA ERROR: " .. tostring(result_ema)
+  end
+
+  return "# EMA: (no data yet - waiting for first sample tick)"
 end
 
 -- =========================================
@@ -376,7 +701,7 @@ function Blueprint.click_bp_extract(event)
   if not player then return end
 
   local st = nil
-  
+
   -- Try to get the currently opened blueprint/book
   if player.opened_gui_type == defines.gui_type.item then
     local ok, opened = pcall(function() return player.opened end)
@@ -413,7 +738,7 @@ function Blueprint.click_bp_extract(event)
   local counts, footprint, produced
   local ok2, result1, result2, result3 = pcall(function()
     if st.is_blueprint_book then
-      return Blueprint.extract_counts_from_book(st), nil
+      return Blueprint.extract_counts_from_book(st)
     else
       return Blueprint.extract_counts_from_blueprint(st)
     end
@@ -449,112 +774,32 @@ function Blueprint.click_bp_extract(event)
   end
 
   costs.footprint = footprint
-  
-  -- Teil 1: Fixed assets (blueprint entities + footprint)
-  local ok4, fixed_txt = pcall(function()
-    return ItemCost.format_detailed_breakdown(costs, player)
-  end)
 
-  if not ok4 then
+  local assets_txt, assets_ok = build_assets_text(costs, player)
+  if not assets_ok then
     safe_print(player, "logistics_simulation.bp_format_failed")
-    safe_log("click_bp_extract: format failed - " .. tostring(fixed_txt))
     return
   end
 
-  -- =========================================
-  -- Teil 2: MASTERDATA (Unit costs): blueprint items + produced items + factory portfolio
-  -- =========================================
+  local report_tabs = {
+    assets = assets_txt or "",
+    costs = build_costs_text(counts, produced, player),
+    system = build_system_text(player),
+    stats = build_stats_text(player),
+    working_capital = build_working_capital_text(player)
+  }
 
-  local function is_valid_item_key(name)
-    if not name then return false end
-    if type(name) ~= 'string' then return false end
-    if name:sub(1,5) == 'tile:' then return false end
-    if prototypes.item and prototypes.item[name] then return true end
-    if prototypes.fluid and prototypes.fluid[name] then return true end
-    return false
-  end
+  UI.show_inventory_window(player, report_tabs)
 
-  local master_set = {}
-
-  -- 1) Blueprint fixed assets (counts keys)
-  for name, _ in pairs(counts or {}) do
-    if is_valid_item_key(name) then
-      master_set[name] = true
-    end
-  end
-
-  -- 2) Produced items from blueprint recipes
-  for name, _ in pairs(produced or {}) do
-    if is_valid_item_key(name) then
-      master_set[name] = true
-    end
-  end
-
-  -- 3) OPTIONAL: include current factory portfolio
-  local okP, portfolio_set = pcall(function()
-    return ItemCost.collect_portfolio_items(storage, Chests.resolve_entity, player.force)
-  end)
-  if okP and portfolio_set then
-    for name, _ in pairs(portfolio_set) do
-      if is_valid_item_key(name) then
-        master_set[name] = true
-      end
-    end
-  end
-
-  -- Expand to full dependency closure (intermediates + terminals)
-  local expanded = ItemCost.expand_item_set_full(master_set, player.force)
-
-  local md_txt = ""
-  if next(expanded) ~= nil then
-    local okU, unit_costs = pcall(function()
-      return ItemCost.calculate_unit_costs(expanded, player.force)
-    end)
-
-    if okU and unit_costs then
-      local okF, out = pcall(function()
-        return ItemCost.format_masterdata_unit_costs(unit_costs)
-      end)
-      if okF and out then
-        md_txt = out
-      end
-    end
-  end
-
-  -- =========================================
-  -- Teil 3: Factory Stats (Szenario, Mods, Strom, Pollution)
-  -- =========================================
-
-  local stats_txt = ""
-  local ok_stats, result_stats = pcall(function()
-    return SimLog.format_factory_stats(player.surface, player.force)
-  end)
-  if ok_stats and result_stats and result_stats ~= "" then
-    stats_txt = result_stats
-  else
-    safe_log("click_bp_extract: format_factory_stats failed - " .. tostring(result_stats))
-  end
-
-  -- Alle drei Teile zusammensetzen
-  local txt = fixed_txt
-  if md_txt ~= "" then
-    txt = txt .. "\n\n" .. md_txt
-  end
-  if stats_txt ~= "" then
-    txt = txt .. "\n\n" .. stats_txt
-  end
-
-  UI.show_inventory_window(player, txt)
-  
   -- Store in session
   bp_session.last[event.player_index] = {
     tick = game.tick,
     label = st.label or "Unnamed",
     counts = counts,
-    costs = costs
+    costs = costs,
+    report_tabs = report_tabs
   }
 end
-
 function Blueprint.tick_cleanup_sidecars()
   for player_index, _ in pairs(bp_session.sidecar_visible) do
     local p = game.get_player(player_index)

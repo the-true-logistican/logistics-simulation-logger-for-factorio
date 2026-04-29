@@ -11,6 +11,9 @@
 --               Simple Days-Time-Clock
 --               new topbar show, prot on/off, global power
 --               show_xxxx if exists then bring_to_front + return
+-- Version 0.8.5 sync topbar with statuw
+--               extract from blueprint with tabs
+-- Version 0.9.0 Stable Ledger Operational Baseline 
 --
 -- =========================================
 
@@ -19,7 +22,7 @@ local Util = require("utility")
 local mod_gui = require("mod-gui")
 
 local UI = {}
-UI.version = "0.8.4"
+UI.version = "0.9.0"
 
 local FRAME_NAME = "logsim_ui_placeholder_frame"
 local LABEL_NAME = "logsim_ui_placeholder_label"
@@ -31,17 +34,6 @@ function UI.ensure_placeholder_frame(player)
     local flow = mod_gui.get_button_flow(player)
     local frame = flow[FRAME_NAME]
     
-    if not (frame and frame.valid) then
-        frame = flow.add{
-            type = "frame",
-            name = FRAME_NAME,
-            direction = "vertical"
-        }  
-        frame.style.width = 120
-        frame.style.padding = 6
-    end
-
-
     if not (frame and frame.valid) then
         frame = flow.add{
             type = "frame",
@@ -405,7 +397,12 @@ function UI.show_export_dialog(player)
   end
 
   -- Determine current export mode (set by your calling code)
-  local mode = (storage and storage.export_mode) or "buffer"
+local mode = "buffer"
+if storage and type(storage.export_mode) == "table" then
+  mode = storage.export_mode[player.index] or "buffer"
+elseif storage and type(storage.export_mode) == "string" then
+  mode = storage.export_mode
+end
 
   -- Single instance per player: if already open, just update caption and bring to front
   local existing = player.gui.screen[M.GUI_EXPORT_FRAME]
@@ -773,17 +770,172 @@ end
 
 -- -----------------------------------------
 -- Blueprint Inventory Result Window (autonomous)
--- Version 0.6.1 - fully localized
+-- Tabbed display, backward compatible with old single-string reports.
 -- -----------------------------------------
 
-function UI.show_inventory_window(player, text)
+local INV_TAB_DEFAULT = "assets"
+
+local INV_TAB_DEFS = {
+  {
+    key = "assets",
+    name = M.GUI_INV_TAB_ASSETS,
+    caption = {"logistics_simulation.inv_tab_assets"},
+    tooltip = {"logistics_simulation.inv_tab_assets_tooltip"}
+  },
+  {
+    key = "costs",
+    name = M.GUI_INV_TAB_COSTS,
+    caption = {"logistics_simulation.inv_tab_costs"},
+    tooltip = {"logistics_simulation.inv_tab_costs_tooltip"}
+  },
+  {
+    key = "system",
+    name = M.GUI_INV_TAB_SYSTEM,
+    caption = {"logistics_simulation.inv_tab_system"},
+    tooltip = {"logistics_simulation.inv_tab_system_tooltip"}
+  },
+  {
+    key = "stats",
+    name = M.GUI_INV_TAB_STATS,
+    caption = {"logistics_simulation.inv_tab_stats"},
+    tooltip = {"logistics_simulation.inv_tab_stats_tooltip"}
+  },
+  {
+    key = "working_capital",
+    name = M.GUI_INV_TAB_WC,
+    caption = {"logistics_simulation.inv_tab_wc"},
+    tooltip = {"logistics_simulation.inv_tab_wc_tooltip"}
+  }
+}
+
+local function normalize_invwin_data(data)
+  if type(data) ~= "table" then
+    return {
+      assets = tostring(data or ""),
+      costs = "",
+      system = "",
+      stats = "",
+      working_capital = ""
+    }
+  end
+
+  return {
+    assets = tostring(data.assets or data.fixed_assets or data["fixed_assets"] or data[1] or ""),
+    costs = tostring(data.costs or data.items_costs or data["items_costs"] or data[2] or ""),
+    system = tostring(data.system or data.mods or data["system_mods"] or data[3] or ""),
+    stats = tostring(data.stats or data.statistics or data[4] or ""),
+    working_capital = tostring(data.working_capital or data.wc or data.ema or data[5] or "")
+  }
+end
+
+local function ensure_invwin_storage()
+  storage.invwin_data = storage.invwin_data or {}
+  storage.invwin_active_tab = storage.invwin_active_tab or {}
+end
+
+local function valid_inv_tab_key(key)
+  for _, def in ipairs(INV_TAB_DEFS) do
+    if def.key == key then return true end
+  end
+  return false
+end
+
+local function get_invwin_tab_text(player_index)
+  ensure_invwin_storage()
+
+  local data = storage.invwin_data[player_index]
+  if not data then return "" end
+
+  local tab = storage.invwin_active_tab[player_index] or INV_TAB_DEFAULT
+  if not valid_inv_tab_key(tab) then
+    tab = INV_TAB_DEFAULT
+    storage.invwin_active_tab[player_index] = tab
+  end
+
+  return data[tab] or ""
+end
+
+local function set_button_style(button, style_name)
+  if not (button and button.valid and style_name) then return end
+  -- Style assignment is intentionally guarded: different Factorio builds/modded
+  -- style sets may reject a style name. The UI must still work without styling.
+  pcall(function()
+    button.style = style_name
+  end)
+end
+
+local function refresh_invwin_tab_styles(frame, active_tab)
+  if not (frame and frame.valid) then return end
+  local tabs = frame[M.GUI_INV_TABS]
+  if not (tabs and tabs.valid) then return end
+
+  for _, def in ipairs(INV_TAB_DEFS) do
+    local button = tabs[def.name]
+    local style_name = (def.key == active_tab)
+      and M.GUI_INV_ACTIVE_TAB_STYLE
+      or M.GUI_INV_INACTIVE_TAB_STYLE
+    set_button_style(button, style_name)
+  end
+end
+
+local function add_inventory_tabs(frame)
+  local tabs = frame.add{
+    type = "flow",
+    name = M.GUI_INV_TABS,
+    direction = "horizontal"
+  }
+  tabs.style.horizontal_spacing = M.GUI_BUTTON_SPACING
+
+  for _, def in ipairs(INV_TAB_DEFS) do
+    tabs.add{
+      type = "button",
+      name = def.name,
+      caption = def.caption,
+      tooltip = def.tooltip
+    }
+  end
+
+  return tabs
+end
+
+function UI.refresh_inventory_window(player)
+  if not (player and player.valid) then return end
+
+  local frame = player.gui.screen[M.GUI_INV_FRAME]
+  if not (frame and frame.valid) then return end
+
+  ensure_invwin_storage()
+  local active_tab = storage.invwin_active_tab[player.index] or INV_TAB_DEFAULT
+  if not valid_inv_tab_key(active_tab) then
+    active_tab = INV_TAB_DEFAULT
+    storage.invwin_active_tab[player.index] = active_tab
+  end
+
+  local box = frame[M.GUI_INV_BOX]
+  if box and box.valid then
+    box.text = get_invwin_tab_text(player.index)
+  end
+
+  refresh_invwin_tab_styles(frame, active_tab)
+end
+
+function UI.show_inventory_window(player, data)
+  if not (player and player.valid) then return end
+
+  ensure_invwin_storage()
+  storage.invwin_data[player.index] = normalize_invwin_data(data)
+
+  local active_tab = storage.invwin_active_tab[player.index]
+  if not valid_inv_tab_key(active_tab) then
+    storage.invwin_active_tab[player.index] = INV_TAB_DEFAULT
+  end
+
   local root = player.gui.screen
 
-  -- Wenn schon offen: nur Text aktualisieren + nach vorne holen
+  -- Wenn schon offen: nur Daten aktualisieren, sichtbaren Tab refreshen + nach vorne holen
   local frame = root[M.GUI_INV_FRAME]
   if frame and frame.valid then
-    local box = frame[M.GUI_INV_BOX]
-    if box and box.valid then box.text = text or "" end
+    UI.refresh_inventory_window(player)
     Util.bring_to_front(frame)
     return
   end
@@ -798,12 +950,13 @@ function UI.show_inventory_window(player, text)
   -- Titelzeile mit X (vollständig lokalisiert)
   add_titlebar(frame, {"logistics_simulation.invwin_title"}, M.GUI_INV_CLOSE_X)
 
-  -- Toolbar: nur Copy + Close (lokalisiert)
+  -- Toolbar: Copy + Export + Close (lokalisiert)
   local top = frame.add{
     type = "flow",
     name = "logsim_invwin_toolbar",
     direction = "horizontal"
   }
+  top.style.horizontal_spacing = M.GUI_BUTTON_SPACING
 
   top.add{
     type = "button",
@@ -824,11 +977,14 @@ function UI.show_inventory_window(player, text)
     caption = {"logistics_simulation.invwin_close"}
   }
 
-  -- Content: Textbox für Inventur-Daten (read-only)
+  -- Registerkarten: Umschaltung erfolgt in gui_handlers.lua über die stabilen Elementnamen.
+  add_inventory_tabs(frame)
+
+  -- Content: Textbox für den aktiven Tab (read-only)
   local box = frame.add{
     type = "text-box",
     name = M.GUI_INV_BOX,
-    text = text or ""
+    text = ""
   }
   box.read_only = true
   box.word_wrap = false
@@ -836,12 +992,21 @@ function UI.show_inventory_window(player, text)
   -- Größe: nimm die Buffer-Dimensionen
   box.style.width  = M.GUI_BUFFER_WIDTH
   box.style.height = M.GUI_BUFFER_HEIGHT
+
+  UI.refresh_inventory_window(player)
   Util.bring_to_front(frame)
 end
 
 function UI.close_inventory_window(player)
+  if not (player and player.valid) then return end
+
   local f = player.gui.screen[M.GUI_INV_FRAME]
   if f and f.valid then f.destroy() end
+
+  if storage then
+    if storage.invwin_data then storage.invwin_data[player.index] = nil end
+    if storage.invwin_active_tab then storage.invwin_active_tab[player.index] = nil end
+  end
 end
 
 
@@ -1033,10 +1198,9 @@ function UI.build_topbar(player)
     style = "slot_button"
   }
 
-  -- Button 2: Toggle-Button (holt State aus storage)
-  local toggle2_state = storage and storage[M.STORAGE_TOGGLE2_STATE] or false
-  local toggle2_sprite = toggle2_state and M.TOPBAR_BTN2_ON_SPRITE or M.TOPBAR_BTN2_OFF_SPRITE
-  
+  -- Button 2: Toggle-Button – liest direkt storage.protocol_active
+  local toggle2_sprite = (storage and storage.protocol_active) and M.TOPBAR_BTN2_ON_SPRITE or M.TOPBAR_BTN2_OFF_SPRITE
+
   flow.add{
     type = "sprite-button",
     name = M.TOPBAR_BTN2,
@@ -1045,9 +1209,8 @@ function UI.build_topbar(player)
     style = "slot_button"
   }
 
-  -- Button 3: Toggle-Button (holt State aus storage)
-  local toggle3_state = storage and storage[M.STORAGE_TOGGLE3_STATE] or false
-  local toggle3_sprite = toggle3_state and M.TOPBAR_BTN3_ON_SPRITE or M.TOPBAR_BTN3_OFF_SPRITE
+  -- Button 3: Toggle-Button – liest direkt storage.gp_enabled
+  local toggle3_sprite = (storage and storage.gp_enabled) and M.TOPBAR_BTN3_ON_SPRITE or M.TOPBAR_BTN3_OFF_SPRITE
   
   flow.add{
     type = "sprite-button",

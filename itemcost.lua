@@ -11,6 +11,7 @@
 --
 -- version 0.8.0 first complete working version
 -- version 0.8.1 debug clear.cache eviction
+-- Version 0.9.0 Stable Ledger Operational Baseline 
 --
 -- =========================================
 
@@ -18,7 +19,7 @@ local ItemCost = {}
 
 local M = require("config")
 
- ItemCost.version = "0.8.0"
+ ItemCost.version = "0.9.0"
 
 -- Cache for calculated costs to avoid recalculation
 -- =========================================

@@ -1,11 +1,92 @@
 -- =========================================
 -- LogSim (Factorio 2.0)
--- Manages registration of chests, tanks, machines and protected entities with visual markers.
+-- Logistics Object Registry Module
 --
--- Rendering markers:
---   - Text markers are managed centrally via UI.marker_text_update/clear
---   - NO legacy marker_*_id persistence anymore
---   - Includes one-shot "purge + redraw" support for old saves
+-- Historical note:
+--   This module is still named "chests.lua" because the first versions only
+--   handled registered chests. The scope has grown over time, but the filename
+--   is kept unchanged to avoid unnecessary require-path and architecture changes.
+--
+-- Purpose:
+--   Central registry for all manually registered logistics objects used by
+--   LogSim. These objects form the stable reference points for inventory
+--   snapshots, transaction accounting, reset protection and visual markers.
+--
+-- Managed object classes:
+--   Cxx = registered chest
+--     - Factorio entity types:
+--       "container"
+--       "logistic-container"
+--
+--   Txx = registered storage tank
+--     - Factorio entity type:
+--       "storage-tank"
+--
+--   Mxx = registered machine
+--     - supported Factorio entity types:
+--       "assembling-machine"
+--       "furnace"
+--       "lab"
+--       "mining-drill"
+--       "rocket-silo"
+--
+--   Pxx = protected entity
+--     - entities explicitly protected from reset/cleanup operations
+--
+-- Operating model:
+--   Players register relevant logistics objects manually.
+--   Registered objects receive stable LogSim ids such as C01, T01, M01 or P01.
+--   The stored registry records contain unit_number, prototype name, surface,
+--   position and object kind. These records are used later by the logger,
+--   transaction module, reset logic, blueprint/accounting views and GUI.
+--
+-- Hotkey operation:
+--   SHIFT + R:
+--     Register the selected object if it is a supported chest, tank or machine.
+--     The same hotkey is intercepted by transaction.lua when the selected
+--     entity is an inserter, so inserter interface states are handled there.
+--
+--   SHIFT + U:
+--     Unregister the selected registered object.
+--     If the selected entity is an inserter, transaction.lua handles the
+--     inserter state reset instead.
+--
+--   SHIFT + P:
+--     Register the selected entity as protected.
+--
+-- Visual markers:
+--   Registered logistics objects:
+--     Cxx/Txx/Mxx text marker in REG_MARK_COLOR
+--     default: green  { r=0, g=1, b=0, a=1 }
+--
+--   Protected objects:
+--     Pxx text marker in PROT_MARK_COLOR
+--     default: orange { r=1, g=0.5, b=0, a=1 }
+--
+-- Marker implementation:
+--   Marker rendering is delegated to UI.marker_text_update().
+--   This module decides which id, color, scale and offset are used.
+--   It also clears invalid markers and removes legacy marker fields from
+--   older saves.
+--
+-- Entity resolution:
+--   Registered objects are resolved back to live LuaEntity instances by:
+--     1) cached unit_number lookup
+--     2) game.get_entity_by_unit_number()
+--     3) surface/name/position fallback search
+--
+-- Cache:
+--   A small runtime entity cache is used to avoid repeated expensive surface
+--   lookups. Cache entries are invalidated when entities are removed or when
+--   a full cache reset is required.
+--
+-- Relationship to transaction.lua:
+--   This module defines the registered logistics objects.
+--   transaction.lua uses those objects as accounting endpoints and then
+--   discovers relevant inserters around them automatically.
+--
+-- Version 0.9.0 Stable Ledger Operational Baseline 
+--
 -- =========================================
 
 local M  = require("config")
@@ -13,7 +94,7 @@ local UI = require("ui")
 local Util = require("utility")
 
 local Chests = {}
-Chests.version = "0.8.0"
+Chests.version = "0.9.0"
 
 -- =========================================
 -- ENTITY CACHE (Performance Optimization)

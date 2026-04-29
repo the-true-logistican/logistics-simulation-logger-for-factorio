@@ -6,6 +6,8 @@
 -- version 0.8.1 ring buffer M.TX_MAX_EVENTS load/save secure
 --               ring buffer M.BUFFER_MAX_LINES load/save secure
 -- version 0.8.2 minor bugs in line counting
+-- version 0.8.3 extract from blueprint with tabs
+-- Version 0.9.0 Stable Ledger Operational Baseline 
 --
 -- =========================================
 
@@ -16,7 +18,7 @@ local Transaction = require("transaction")
 local Util = require("utility")
 
 local Export = {}
-Export.version = "0.8.2"
+Export.version = "0.9.0"
 
 -- Build a JSON-friendly TX array containing ONLY the used portion.
 -- Order is not guaranteed/required (Martin), but we still export in logical (oldest->newest) order for convenience.
@@ -146,37 +148,100 @@ end
 
 
 -- =========================================
--- INV EXPORT 
+-- INV EXPORT
 -- =========================================
 
-local function get_inv_text(player)
+local INV_EXPORT_ORDER = {
+  { key = "assets",          title = "FIXED ASSETS" },
+  { key = "costs",           title = "ITEMS/COSTS" },
+  { key = "system",          title = "SYSTEM/MODS" },
+  { key = "stats",           title = "STATISTICS" },
+  { key = "working_capital", title = "WORKING CAPITAL" },
+}
+
+local function get_inv_tabs(player)
+  if not (player and player.valid) then return nil end
+
+  -- New tabbed inventory report: set by UI.show_inventory_window(player, report_tabs).
+  if storage
+     and storage.invwin_data
+     and type(storage.invwin_data[player.index]) == "table" then
+    return storage.invwin_data[player.index]
+  end
+
+  -- Backward-compatible fallback: export the currently visible text box.
   local frame = player.gui.screen[M.GUI_INV_FRAME]
   if not (frame and frame.valid) then return nil end
+
   local box = frame[M.GUI_INV_BOX]
   if not (box and box.valid) then return nil end
+
   local txt = box.text or ""
   if txt == "" then return nil end
-  return txt
+
+  return {
+    assets = txt,
+    costs = "",
+    system = "",
+    stats = "",
+    working_capital = ""
+  }
+end
+
+local function inv_tabs_have_data(tabs)
+  if type(tabs) ~= "table" then return false end
+
+  for _, def in ipairs(INV_EXPORT_ORDER) do
+    local txt = tabs[def.key]
+    if type(txt) == "string" and txt ~= "" then
+      return true
+    end
+  end
+
+  return false
+end
+
+local function inv_tabs_to_text(tabs)
+  local lines = {}
+
+  for _, def in ipairs(INV_EXPORT_ORDER) do
+    local txt = tabs[def.key] or ""
+
+    lines[#lines + 1] = "# =================================================="
+    lines[#lines + 1] = "# " .. def.title
+    lines[#lines + 1] = "# =================================================="
+
+    if txt ~= "" then
+      lines[#lines + 1] = txt
+    else
+      lines[#lines + 1] = "# no data"
+    end
+
+    lines[#lines + 1] = ""
+  end
+
+  return table.concat(lines, "\n")
 end
 
 function Export.export_inv_csv(player)
   Buffer.ensure_defaults()
 
-  local txt = get_inv_text(player)
-  if not txt then
+  local tabs = get_inv_tabs(player)
+  if not inv_tabs_have_data(tabs) then
     player.print({"logistics_simulation.export_no_data"})
     return
   end
 
   local filename = get_export_filename(player)
   local filepath = M.EXPORT_FOLDER .. "/" .. filename .. ".csv"
+  local content = inv_tabs_to_text(tabs)
 
   local success, err = pcall(function()
-    helpers.write_file(filepath, txt)
+    helpers.write_file(filepath, content)
   end)
 
   if success then
-    player.print({"logistics_simulation.export_success", filepath, 1})
+    player.print({"logistics_simulation.export_success", filepath, #INV_EXPORT_ORDER})
   else
     player.print({"logistics_simulation.export_failed", tostring(err)})
   end
@@ -187,8 +252,8 @@ end
 function Export.export_inv_json(player)
   Buffer.ensure_defaults()
 
-  local txt = get_inv_text(player)
-  if not txt then
+  local tabs = get_inv_tabs(player)
+  if not inv_tabs_have_data(tabs) then
     player.print({"logistics_simulation.export_no_data"})
     return
   end
@@ -196,21 +261,22 @@ function Export.export_inv_json(player)
   local filename = get_export_filename(player)
   local filepath = M.EXPORT_FOLDER .. "/" .. filename .. ".json"
 
-  local lines = {}
-  for line in string.gmatch(txt, "([^\n]+)") do
-    lines[#lines+1] = line
-  end
-
   local data = {
     metadata = {
       mod_version = Util.get_logger_version(),
       run_name = storage.run_name or "unnamed",
       start_tick = storage.run_start_tick or 0,
       export_tick = game.tick,
-      kind = "inventory"
+      kind = "inventory_report_tabs",
+      tab_count = #INV_EXPORT_ORDER
     },
-    inventory_text = txt,
-    inventory_lines = lines
+    inventory_report = {
+      assets = tabs.assets or "",
+      costs = tabs.costs or "",
+      system = tabs.system or "",
+      stats = tabs.stats or "",
+      working_capital = tabs.working_capital or ""
+    }
   }
 
   local json_str = Export.table_to_json(data)
@@ -220,7 +286,7 @@ function Export.export_inv_json(player)
   end)
 
   if success then
-    player.print({"logistics_simulation.export_success", filepath, #lines})
+    player.print({"logistics_simulation.export_success", filepath, #INV_EXPORT_ORDER})
   else
     player.print({"logistics_simulation.export_failed", tostring(err)})
   end
@@ -336,7 +402,7 @@ function Export.table_to_json(tbl, indent)
   
   if type(tbl) ~= "table" then
     if type(tbl) == "string" then
-      return '"' .. tbl:gsub('"', '\\"'):gsub("\n", "\\n") .. '"'
+      return '"' .. Util.json_escape_string(tbl) .. '"'
     elseif type(tbl) == "number" or type(tbl) == "boolean" then
       return tostring(tbl)
     elseif tbl == nil then
@@ -375,12 +441,14 @@ function Export.table_to_json(tbl, indent)
     
     for _, k in ipairs(keys) do
       local v = tbl[k]
-      local key_str = '"' .. tostring(k) .. '"'
+      local key_str = '"' .. Util.json_escape_string(k) .. '"'
       local val_str = Export.table_to_json(v, indent + 1)
       parts[#parts + 1] = next_indent_str .. key_str .. ": " .. val_str
     end
     return "{\n" .. table.concat(parts, ",\n") .. "\n" .. indent_str .. "}"
   end
 end
+
+
 
 return Export

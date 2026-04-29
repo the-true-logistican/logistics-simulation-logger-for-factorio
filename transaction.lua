@@ -32,7 +32,9 @@
 -- Version 0.8.3 WIP virtual account + Shift-R toggle normal/WIP/OFF (minimal additions)
 -- Version 0.8.4 transactions with the "hand" of the player
 --               crafting in wirtual inventpry MAN
--- Versioj 0.8.5 Setup Parameters corrected
+-- Version 0.8.5 Setup Parameters corrected
+-- Version 0.8.6 Transition: filled -> filled, same item/quality, changed count
+-- Version 0.9.0 Stable Ledger Operational Baseline 
 --
 -- =========================================
 
@@ -41,7 +43,7 @@ local UI = require("ui")
 local Util = require("utility")  -- fly() lives here
 
 local Transaction = {}
-Transaction.version = "0.8.5"
+Transaction.version = "0.9.0"
 
 -- forward declarations (needed because ensure_defaults() uses them)
 local tx_rb_ensure
@@ -1067,6 +1069,54 @@ local function process_inserter(ins, tick)
     ins_rec.last = nil
     return
   end
+
+  -- Transition: filled -> filled, same item/quality, changed count
+  -- Stack inserters can increase/decrease the held amount while the hand is not empty.
+  -- Book only the delta so TAKE/GIVE quantities stay balanced.
+  if last and now
+     and last.name == now.name
+     and (last.quality or "normal") == (now.quality or "normal") then
+
+    local delta = (tonumber(now.count) or 0) - (tonumber(last.count) or 0)
+
+    if delta > 0 then
+      local src = src_obj or opposite_obj(ins_unit, src_obj, dst_obj)
+
+      push_event({
+        tick = tick,
+        ins_id = ins_rec.id,
+        ins_unit = ins_unit,
+        kind = "TAKE",
+        obj = src,
+        obj_unit = pick and pick.unit_number or nil,
+        item = now.name,
+        cnt = delta,
+        qual = now.quality or "normal"
+      })
+
+      ins_rec.last = now
+      return
+    elseif delta < 0 then
+      local dst = dst_obj or opposite_obj(ins_unit, src_obj, dst_obj)
+
+      push_event({
+        tick = tick,
+        ins_id = ins_rec.id,
+        ins_unit = ins_unit,
+        kind = "GIVE",
+        obj = dst,
+        obj_unit = drop and drop.unit_number or nil,
+        item = last.name,
+        cnt = -delta,
+        qual = last.quality or "normal"
+      })
+
+      ins_rec.last = now
+      return
+    end
+  end
+
+
 
   -- Any other change (rare): refresh last
   ins_rec.last = now

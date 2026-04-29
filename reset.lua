@@ -5,13 +5,14 @@
 -- version 0.8.0 first complete working version
 -- version 0.8.1 Reset clears players inventory too
 -- version 0.8.2 Reset clears roboports (robots + repair mats) + destroys flying bots
+-- Version 0.9.0 Stable Ledger Operational Baseline 
 --
 -- =========================================
 
 local M = require("config")
 
 local R = {}
-R.version = "0.8.2"
+R.version = "0.9.0"
 
 -- FIX: Added validity check for power switches
 local function set_factory_power(surface, state)

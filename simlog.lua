@@ -5,6 +5,7 @@
 --
 -- Version 0.8.1 introduce WIP (work in progress)
 -- Version 0.8.2 format_factory_stats: scenario, mods, power (3 windows), pollution (3 windows)
+-- Version 0.9.0 Stable Ledger Operational Baseline 
 --
 -- =========================================
 
@@ -14,7 +15,7 @@ local Chests = require("chests")
 local Util = require("utility")
 
 local SimLog = {}
-SimLog.version = "0.8.2"
+SimLog.version = "0.9.0"
 
 SimLog.MACHINE_STATE = {
   RUN       = "RUN",

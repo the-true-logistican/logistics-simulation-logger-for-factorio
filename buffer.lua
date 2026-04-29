@@ -7,13 +7,14 @@
 -- version 0.8.1 ring buffer M.BUFFER_MAX_LINES load/save secure
 -- version 0.8.2 bug in gui-window if /prot off
 -- Version 0.8.3 Setup Parameters corrected
+-- Version 0.9.0 Stable Ledger Operational Baseline 
 --
 -- =========================================
 
 local M = require("config")
 
 local Buffer = {}
-Buffer.version = "0.8.3"
+Buffer.version = "0.9.0"
 
 -- -----------------------------------------
 -- Defaults

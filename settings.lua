@@ -23,4 +23,22 @@ data:extend({
     minimum_value = 1000,
     order = "a[sampling]-c[tx]"
   },
+  {
+    type = "double-setting",
+    name = "logsim_ema_alpha_fast",
+    setting_type = "runtime-global",
+    default_value = 0.3,
+    minimum_value = 0.01,
+    maximum_value = 0.99,
+    order = "b[ema]-a[fast]"
+  },
+  {
+    type = "double-setting",
+    name = "logsim_ema_alpha_slow",
+    setting_type = "runtime-global",
+    default_value = 0.1,
+    minimum_value = 0.01,
+    maximum_value = 0.99,
+    order = "b[ema]-b[slow]"
+  },
 })

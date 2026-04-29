@@ -36,13 +36,23 @@
 --               Reset clears roboports (robots + repair mats) + destroys flying bots
 -- Version 0.8.x only small debugging and code revision
 -- Version 0.8.12 Config correct handle
+-- Version 0.8.14 sync topbar with statuw
+-- Version 0.8.15 EMA Module – Exponential Moving Average über Bestände
+--                extract from blueprint with tabs
+-- Version 0.9.0 Stable Ledger Operational Baseline 
 --
+-- =========================================
+-- Version 0.9 consolidates Factory Ledger into an operational pre-1.0 baseline. 
+-- The core simulation logger, accounting ledger, transaction tracking, inventory 
+-- analysis, reset workflow, and export pipeline are now functionally complete and 
+-- ready for structured bookkeeping runs.
 -- =========================================
 
 local M = require("config")
 local Buffer = require("buffer")
 local R = require("reset")
 local UI = require("ui")
+local EMA = require("ema")
 local Chests = require("chests")
 local SimLog = require("simlog")
 local ItemCost = require("itemcost")
@@ -51,9 +61,11 @@ local Export = require("export")
 local Transaction = require("transaction")
 local Util = require("utility")
 local mod_gui = require("mod-gui")
-local GUI = require("gui_handlers")  -- NEU: Alle GUI-Handler
+local GUI = require("gui_handlers")  
+
 
 local _needs_marker_refresh_after_load = false
+local _needs_topbar_sync = false
 
 local Registry = require("event_registry")
 local PROVIDER_API = "logistics_events_api"
@@ -71,22 +83,12 @@ local _needs_UI_time_Window = false
 
 -- Funktion, die die Daten vom Provider verarbeitet
 local function handle_logistics_event(event)
-    local le = event.logistics_event
-    if not le then return end
-
-    -- Feed manual actions into transaction log (player hand behaves like pseudo-inserter Hxx)
-    if Transaction and Transaction.ingest_manual_logistics_event then
-        Transaction.ingest_manual_logistics_event(le)
-    end
-
-    -- Gleiche Ausgabe wie im Big Brother, markiert als [CLIENT]
-    local location_str = le.source_or_target.type .. " [ID:" .. le.source_or_target.id .. "] Slot:" .. le.source_or_target.slot_name
-    
---    if le.action == "TAKE" then
---        game.print("[CLIENT] TAKE | Tick:" .. le.tick .. " | Actor:" .. le.actor.type .. " | Item:" .. le.item.name .. " | Qty:" .. le.item.quantity)
---    else
---        game.print("[CLIENT] GIVE | Tick:" .. le.tick .. " | Actor:" .. le.actor.type .. " | Target:" .. location_str .. " | Item:" .. le.item.name)
---    end
+  local le = event.logistics_event
+  if not le then return end
+  -- Feed manual actions into transaction log (player hand behaves like pseudo-inserter Hxx)
+  if Transaction and Transaction.ingest_manual_logistics_event then
+    Transaction.ingest_manual_logistics_event(le)
+  end
 end
 
 -- Funktion zur Registrierung des Events beim Provider
@@ -359,6 +361,7 @@ script.on_load(function()
 
   _needs_marker_refresh_after_load = true
   _needs_UI_time_Window = true
+  _needs_topbar_sync = true  -- Button-Sprites beim ersten Tick nach Load synchronisieren
 end)
 
 script.on_event(defines.events.on_runtime_mod_setting_changed, on_runtime_mod_setting_changed)
@@ -544,7 +547,11 @@ local function tick_build_and_append_logline()
     SimLog.append_virtual_buffers(parts) 
 	
     Buffer.append_line(SimLog.end_telegram(parts))
-    
+
+    -- EMA: Snapshot sammeln und gleitenden Durchschnitt updaten
+    local ema_snap = EMA.collect_snapshot(surf_idx)
+    EMA.update(ema_snap, tick)
+   
     ::continue::
   end
 end
@@ -608,6 +615,13 @@ script.on_event(defines.events.on_tick, function(event)
       Transaction.update_marks()
     end
     _needs_marker_refresh_after_load = false
+  end
+
+  -- Button-Sprites nach Save-Load mit storage-Zustand synchronisieren
+  -- (on_load darf keine game-API nutzen; daher Flag-Pattern über on_tick)
+  if _needs_topbar_sync then
+    _needs_topbar_sync = false
+    GUI.update_topbar_buttons()
   end  
   
   if storage._needs_rendering_cleanup then
@@ -695,6 +709,9 @@ script.on_event(defines.events.on_gui_click, function(event)
   end
 
   local name = element.name
+
+  -- Inventory Window Tabs
+  if GUI.click_invwin_tab(event, element) then return end
 
   -- Run Name Dialog
   if name == "logsim_runname_ok" then

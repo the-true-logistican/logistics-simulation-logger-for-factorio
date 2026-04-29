@@ -3,7 +3,8 @@
 -- Shared helper functions (time conversion, flying text, filename sanitizing).
 --
 -- version 0.8.0 first complete working version
--- version 0.8.1 Simple Days-Time-Clock
+-- Version 0.8.1 Simple Days-Time-Clock
+-- Version 0.9.0 Stable Ledger Operational Baseline 
 --
 -- =========================================
 
@@ -11,7 +12,7 @@ local Util = {}
 
 local M = require("config")
 
-  Util.version = "0.8.1"
+  Util.version = "0.9.0"
 
 -- Factorio day starts at noon; we shift by +0.5 day so that 00:00 maps to midnight.
 -- Provides ISO-8601 UTC-like timestamps and Excel-friendly datetime strings.
@@ -198,6 +199,21 @@ function Util.bring_to_front(frame)
   if frame and frame.valid and frame.bring_to_front then
     frame.bring_to_front()
   end
+end
+
+
+-- =========================================
+-- JSON-Escape 
+-- =========================================
+function Util.json_escape_string(s)
+  s = tostring(s or "")
+
+  return s
+    :gsub("\\", "\\\\")
+    :gsub('"', '\\"')
+    :gsub("\n", "\\n")
+    :gsub("\r", "\\r")
+    :gsub("\t", "\\t")
 end
 
 -- =========================================
