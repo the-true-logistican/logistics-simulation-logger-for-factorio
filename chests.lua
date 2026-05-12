@@ -85,7 +85,8 @@
 --   transaction.lua uses those objects as accounting endpoints and then
 --   discovers relevant inserters around them automatically.
 --
--- Version 0.9.0 Stable Ledger Operational Baseline 
+-- Version 0.9.0 Stable Ledger Operational Baseline
+-- Version 0.9.1 registering chests is now transitiv to machines to avoid implicit WIP
 --
 -- =========================================
 
@@ -94,7 +95,7 @@ local UI = require("ui")
 local Util = require("utility")
 
 local Chests = {}
-Chests.version = "0.9.0"
+Chests.version = "0.9.1"
 
 -- =========================================
 -- ENTITY CACHE (Performance Optimization)
@@ -444,6 +445,59 @@ end
 -- =========================================
 -- Public: Register machine
 -- =========================================
+
+function Chests.is_machine_entity(ent)
+  return is_machine(ent)
+end
+
+function Chests.register_machine_entity(ent, log, reason)
+  if not (ent and ent.valid and ent.unit_number) then
+    return false, nil
+  end
+
+  if not is_machine(ent) then
+    return false, nil
+  end
+
+  storage.machines = storage.machines or {}
+
+  if storage.machines[ent.unit_number] then
+    return false, storage.machines[ent.unit_number].id
+  end
+
+  local id = string.format("M%02d", storage.next_machine_id)
+  storage.next_machine_id = storage.next_machine_id + 1
+
+  local rec = {
+    id = id,
+    unit_number = ent.unit_number,
+    name = ent.name,
+    type = ent.type,
+    surface_index = ent.surface.index,
+    position = { x = ent.position.x, y = ent.position.y },
+    marker_text = nil
+  }
+
+  storage.machines[ent.unit_number] = rec
+  Chests.update_marker(rec, ent)
+  storage.marker_dirty = true
+
+  if log then
+    log(string.format(
+      "EV;%d;AUTO_MACH;id=%s;unit=%d;type=%s;name=%s;x=%.1f;y=%.1f;reason=%s",
+      game.tick,
+      id,
+      ent.unit_number,
+      ent.type,
+      ent.name,
+      ent.position.x,
+      ent.position.y,
+      tostring(reason or "closure")
+    ))
+  end
+
+  return true, id
+end
 
 function Chests.register_machine(player, log)
   if not Chests.check_selected_entity(player) then return end

@@ -6,13 +6,15 @@
 -- version 0.8.1 Reset clears players inventory too
 -- version 0.8.2 Reset clears roboports (robots + repair mats) + destroys flying bots
 -- Version 0.9.0 Stable Ledger Operational Baseline 
+-- Version 0.9.1 Reset_stats now independant from reset_simulation
+--               integrated reset_machine_work_state
 --
 -- =========================================
 
 local M = require("config")
 
 local R = {}
-R.version = "0.9.0"
+R.version = "0.9.1"
 
 -- FIX: Added validity check for power switches
 local function set_factory_power(surface, state)
@@ -128,6 +130,64 @@ local function clear_inventory(ent, inv_id)
   return false
 end
 
+local function reset_machine_work_state(ent, log)
+  if not (ent and ent.valid) then return false end
+
+  local touched = false
+
+  -- Factorio 2.x: CraftingMachine only.
+  -- pcall bewusst, weil nicht jeder Entity-Typ diese Properties unterstützt.
+  local ok_cp, err_cp = pcall(function()
+    ent.crafting_progress = 0
+  end)
+  if ok_cp then
+    touched = true
+  elseif log then
+    log("EV;" .. game.tick .. ";WARN;crafting_progress_reset_failed;name="
+      .. tostring(ent.name)
+      .. ";unit=" .. tostring(ent.unit_number)
+      .. ";err=" .. tostring(err_cp))
+  end
+
+  local ok_bp, err_bp = pcall(function()
+    ent.bonus_progress = 0
+  end)
+  if ok_bp then
+    touched = true
+  elseif log then
+    log("EV;" .. game.tick .. ";WARN;bonus_progress_reset_failed;name="
+      .. tostring(ent.name)
+      .. ";unit=" .. tostring(ent.unit_number)
+      .. ";err=" .. tostring(err_bp))
+  end
+
+  -- result_quality ist absichtlich NICHT gesetzt:
+  -- Factorio 2.x: Schreiben von nil ist nicht erlaubt; progress=0 reicht als Reset.
+  return touched
+end
+
+local function clear_entity_fluids(ent, log)
+  if not (ent and ent.valid) then return false end
+
+  local ok, err = pcall(function()
+    ent.clear_fluid_inside()
+  end)
+
+  if ok then
+    return true
+  end
+
+  if log then
+    log("EV;" .. game.tick .. ";WARN;machine_fluid_clear_failed;name="
+      .. tostring(ent.name)
+      .. ";unit=" .. tostring(ent.unit_number)
+      .. ";err=" .. tostring(err))
+  end
+
+  return false
+end
+
+
 local function reset_clear_machine_buffers(surface, force, log)
   local cleared = 0
 
@@ -136,6 +196,7 @@ local function reset_clear_machine_buffers(surface, force, log)
   for _, ent in ipairs(assemblers) do
     if ent.valid and not is_protected(ent) then
       local any = false
+      any = reset_machine_work_state(ent, log) or any
       any = clear_inventory(ent, defines.inventory.assembling_machine_input) or any
       any = clear_inventory(ent, defines.inventory.assembling_machine_output) or any
       any = clear_inventory(ent, defines.inventory.fuel) or any
@@ -150,6 +211,7 @@ local function reset_clear_machine_buffers(surface, force, log)
   for _, ent in ipairs(furnaces) do
     if ent.valid and not is_protected(ent) then
       local any = false
+      any = reset_machine_work_state(ent, log) or any
       any = clear_inventory(ent, defines.inventory.furnace_source) or any
       any = clear_inventory(ent, defines.inventory.furnace_result) or any
       any = clear_inventory(ent, defines.inventory.fuel) or any
@@ -226,7 +288,7 @@ local function reset_clear_inserter_hands(surface, force)
 end
 
 -- NEW: Reset all statistics (v0.5.3)
-local function reset_statistics(surface, force, log)
+function R.reset_statistics(surface, force, log)
   local stats_reset = 0
 
   -- Helper: clear stats safely
@@ -340,7 +402,7 @@ local function reset_clear_roboports(surface, force, log)
 end
 
 -- Exported function (updated signature for v0.5.3)
-function R.do_reset_simulation(surface, force, log, reset_stats)
+function R.do_reset_simulation(surface, force, log)
   set_factory_power(surface, false)
   
   if log then
@@ -356,17 +418,11 @@ function R.do_reset_simulation(surface, force, log, reset_stats)
   local cleared_ports, skipped_ports, cleared_robots, cleared_mats, destroyed_bots =
     reset_clear_roboports(surface, force, log)
   
-  -- NEW: Reset statistics if requested (v0.5.3)
-  local stats_cleared = 0
-  if reset_stats then
-    stats_cleared = reset_statistics(surface, force, log)
-  end
-
   if log then
     log(string.format(
-      "EV;%d;RESET_DONE;chests=%d;skipped_protected=%d;ground=%d;machines=%d;entities=%d;lines=%d;inserters=%d;pol_chunks=%d;pol_removed=%.2f;roboports=%d;roboports_skipped=%d;robots=%d;repair_mats=%d;bots_destroyed=%d;stats=%d",
+      "EV;%d;RESET_DONE;chests=%d;skipped_protected=%d;ground=%d;machines=%d;entities=%d;lines=%d;inserters=%d;pol_chunks=%d;pol_removed=%.2f;roboports=%d;roboports_skipped=%d;robots=%d;repair_mats=%d;bots_destroyed=%d",
       game.tick, cleared_chests, skipped, ground, cleared_machines, cleared_belts, cleared_lines, cleared_hands,
-      pol_chunks, pol_removed, cleared_ports, skipped_ports, cleared_robots, cleared_mats, destroyed_bots, stats_cleared
+      pol_chunks, pol_removed, cleared_ports, skipped_ports, cleared_robots, cleared_mats, destroyed_bots
     ))
   end
   

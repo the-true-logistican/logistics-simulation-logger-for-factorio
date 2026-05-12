@@ -17,6 +17,7 @@
 -- Version 0.8.2 Phase 3: format_display implementiert
 -- Versioj 0.8.3 extract from blueprint with tabs
 -- Version 0.9.0 Stable Ledger Operational Baseline 
+-- Version 0.9.1 EMA-Display now only values >0
 --
 -- =========================================
 
@@ -26,7 +27,7 @@ local Util   = require("utility")
 
 
 local EMA = {}
-EMA.version = "0.9.0"
+EMA.version = "0.9.1"
 
 -- =========================================
 -- Alpha-Getter (aus Settings via config.lua)
@@ -358,15 +359,20 @@ function EMA.format_display(tick, surface)
   for _, name in ipairs(names) do
     local entry = ema[name]
     if entry then
-      local alias = M.ITEM_ALIASES[name] or name
+      -- Zeile überspringen wenn alles 0
+      if entry.cur == 0 and entry.fast < 0.05 and entry.slow < 0.05 then
+        goto continue
+      end
+
       lines[#lines+1] = string.format(
         "%s;%d;%.1f;%.1f",
-        alias,
-        math.floor(entry.cur  or 0),
+        name,
+        math.floor(entry.cur or 0),
         entry.fast or 0,
         entry.slow or 0
       )
     end
+    ::continue::
   end
 
   return table.concat(lines, "\n")

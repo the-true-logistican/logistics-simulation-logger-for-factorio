@@ -35,15 +35,20 @@
 -- Version 0.8.5 Setup Parameters corrected
 -- Version 0.8.6 Transition: filled -> filled, same item/quality, changed count
 -- Version 0.9.0 Stable Ledger Operational Baseline 
+-- Version 0.9.1 TAKE from WIP uses BOM to relieve the WIP inventory
+--               TAKE from T00 (transit) is now a post-deduct inventory transaction
+--               GIVE to T00 in now a assumption-based posting
+--               registering chests is now transitiv to machines to avoid implicit WIP
 --
 -- =========================================
 
 local Config = require("config")
-local UI = require("ui")
-local Util = require("utility")  -- fly() lives here
+local UI     = require("ui")
+local Chests = require("chests")
+local Util   = require("utility")  -- fly() lives here
 
 local Transaction = {}
-Transaction.version = "0.9.0"
+Transaction.version = "0.9.1"
 
 -- forward declarations (needed because ensure_defaults() uses them)
 local tx_rb_ensure
@@ -302,6 +307,158 @@ local function virtual_add(obj, item, delta, qual)
   end
 end
 
+-- -----------------------------------------
+-- WIP retrograde consumption
+--
+-- TAKE from WIP is treated as production output. The output item itself is
+-- never consumed from WIP, because externally supplied or separately produced
+-- output stock must remain untouched. Instead, the output is resolved one
+-- recipe level down and the direct ingredients are consumed from the highest
+-- available WIP stage first. Only uncovered remainders are recursively
+-- resolved further.
+-- -----------------------------------------
+
+local function recipe_product_amount(recipe_proto, product_name)
+  if not (recipe_proto and product_name) then return nil end
+
+  for _, product in pairs(recipe_proto.products or {}) do
+    if product and product.name == product_name then
+      local amount = tonumber(product.amount)
+      if amount and amount > 0 then return amount end
+
+      local amount_min = tonumber(product.amount_min)
+      local amount_max = tonumber(product.amount_max)
+      if amount_min and amount_max and amount_min > 0 and amount_max > 0 then
+        return (amount_min + amount_max) / 2
+      end
+
+      return 1
+    end
+  end
+
+  if recipe_proto.main_product and recipe_proto.main_product.name == product_name then
+    return 1
+  end
+
+  return nil
+end
+
+local function find_recipe_for_product_one_level(product_name, force)
+  if not product_name then return nil, nil end
+  force = force or game.forces.player
+
+  for recipe_name, recipe_proto in pairs(prototypes.recipe or {}) do
+    local enabled = true
+    if force and force.valid and force.recipes then
+      local force_recipe = force.recipes[recipe_name]
+      enabled = force_recipe and force_recipe.enabled == true
+    end
+
+    if enabled then
+      local out_amount = recipe_product_amount(recipe_proto, product_name)
+      if out_amount and out_amount > 0 then
+        return recipe_proto, out_amount
+      end
+    end
+  end
+
+  return nil, nil
+end
+
+local function wip_positive_available(item, qual)
+  if not (storage.tx_virtual and storage.tx_virtual.WIP) then return 0 end
+  local key = vkey(item, qual)
+  if not key then return 0 end
+
+  local have = tonumber(storage.tx_virtual.WIP[key]) or 0
+  if have <= 0 then return 0 end
+  return have
+end
+
+local function wip_consume_direct(item, amount, qual)
+  amount = tonumber(amount) or 0
+  if not item or amount <= 0 then return 0 end
+
+  local have = wip_positive_available(item, qual)
+  local take = math.min(have, amount)
+  if take > 0 then
+    virtual_add("WIP", item, -take, qual)
+  end
+
+  return amount - take
+end
+
+local consume_wip_input
+
+local function retrograde_ingredients_from_recipe(recipe_proto, out_amount, requested_amount, force, depth, visited)
+  if not (recipe_proto and out_amount and out_amount > 0) then return false end
+
+  local factor = (tonumber(requested_amount) or 0) / out_amount
+  if factor <= 0 then return true end
+
+  for _, ingredient in pairs(recipe_proto.ingredients or {}) do
+    local ing_name = ingredient and ingredient.name
+    local ing_amount = tonumber(ingredient and ingredient.amount) or 0
+
+    if ing_name and ing_amount > 0 then
+      consume_wip_input(ing_name, ing_amount * factor, "normal", force, depth + 1, visited)
+    end
+  end
+
+  return true
+end
+
+consume_wip_input = function(item, amount, qual, force, depth, visited)
+  amount = tonumber(amount) or 0
+  if not item or amount <= 0 then return end
+
+  depth = tonumber(depth) or 0
+  local max_depth = tonumber(Config.COLLECT_DEPENDENC_DEPTH) or 30
+  if depth > max_depth then
+    virtual_add("WIP", item, -amount, qual)
+    return
+  end
+
+  -- Inputs are allowed to consume their own WIP stock first.
+  local rest = wip_consume_direct(item, amount, qual)
+  if rest <= 0 then return end
+
+  visited = visited or {}
+  if visited[item] then
+    virtual_add("WIP", item, -rest, qual)
+    return
+  end
+
+  local next_visited = {}
+  for k, v in pairs(visited) do next_visited[k] = v end
+  next_visited[item] = true
+
+  local recipe_proto, out_amount = find_recipe_for_product_one_level(item, force)
+  if not recipe_proto then
+    virtual_add("WIP", item, -rest, qual)
+    return
+  end
+
+  retrograde_ingredients_from_recipe(recipe_proto, out_amount, rest, force, depth, next_visited)
+end
+
+local function retrograde_take_product_from_wip(product, amount, qual, force)
+  amount = tonumber(amount) or 0
+  if not product or amount <= 0 then return false end
+
+  local recipe_proto, out_amount = find_recipe_for_product_one_level(product, force)
+  if not recipe_proto then
+    -- No recipe means the output cannot be explained; keep the residual visible.
+    virtual_add("WIP", product, -amount, qual)
+    return false
+  end
+
+  -- Critical rule: do NOT consume product itself from WIP here. TAKE WIP product
+  -- represents an output leaving WIP; only its ingredients may be relieved.
+  retrograde_ingredients_from_recipe(recipe_proto, out_amount, amount, force, 0, { [product] = true })
+  return true
+end
+
 tx_rb_ensure = function()
   -- Ringbuffer state (O(1) push, O(1) random access in logical order)
   storage.tx_events = storage.tx_events or {}
@@ -440,7 +597,11 @@ local function push_event(ev)
       if ev.kind == "GIVE" then
         virtual_add(ev.obj, ev.item,  cnt, ev.qual)
       elseif ev.kind == "TAKE" then
-        virtual_add(ev.obj, ev.item, -cnt, ev.qual)
+        if ev.obj == "WIP" then
+          retrograde_take_product_from_wip(ev.item, cnt, ev.qual, game.forces.player)
+        else
+          virtual_add(ev.obj, ev.item, -cnt, ev.qual)
+        end
       end
     end
   end
@@ -533,6 +694,134 @@ local OBJ_SHIP    = "SHIP"
 local OBJ_RECV    = "RECV"
 local OBJ_WIP     = "WIP"
 local OBJ_MAN     = "MAN"
+
+local function unknown_source_obj(ins_unit, src_obj, dst_obj)
+  local is_active = Transaction.is_inserter_active and Transaction.is_inserter_active(ins_unit)
+
+  if is_active then
+    -- WIP mode overrides normal interface classification.
+    if storage.tx_wip_inserters and storage.tx_wip_inserters[ins_unit] == true then
+      return OBJ_WIP
+    end
+
+    -- Unknown source + registered destination = inbound interface.
+    local meta = storage.tx_watch_meta and storage.tx_watch_meta[ins_unit]
+    local b = meta and meta.boundary or nil
+    if b == "recv" then return OBJ_RECV end
+
+    if (not src_obj) and dst_obj then
+      return OBJ_RECV
+    end
+  end
+
+  return OBJ_TRANSIT
+end
+
+local function unknown_destination_obj(ins_unit, src_obj, dst_obj)
+  local is_active = Transaction.is_inserter_active and Transaction.is_inserter_active(ins_unit)
+
+  if is_active then
+    -- WIP mode overrides normal interface classification.
+    if storage.tx_wip_inserters and storage.tx_wip_inserters[ins_unit] == true then
+      return OBJ_WIP
+    end
+
+    -- Registered source + unknown destination = outbound interface.
+    local meta = storage.tx_watch_meta and storage.tx_watch_meta[ins_unit]
+    local b = meta and meta.boundary or nil
+    if b == "ship" then return OBJ_SHIP end
+
+    if src_obj and (not dst_obj) then
+      return OBJ_SHIP
+    end
+  end
+
+  return OBJ_TRANSIT
+end
+
+-- -----------------------------------------
+-- Deferred transit TAKE
+--
+-- If an inserter takes from an unregistered source, we do not book TAKE T00
+-- immediately. Belt/source detection is not stable enough for accounting.
+-- Instead, remember the amount in the inserter record and book TAKE T00
+-- retroactively when the corresponding GIVE is observed.
+-- -----------------------------------------
+
+local function defer_transit_take(ins_rec, item, cnt, qual)
+  cnt = tonumber(cnt) or 0
+  if not ins_rec or not item or cnt <= 0 then return end
+
+  qual = qual or "normal"
+  local key = vkey(item, qual)
+  if not key then return end
+
+  ins_rec.deferred_transit_take = ins_rec.deferred_transit_take or {}
+
+  local rec = ins_rec.deferred_transit_take[key]
+  if not rec then
+    rec = {
+      item = item,
+      qual = qual,
+      cnt = 0
+    }
+    ins_rec.deferred_transit_take[key] = rec
+  end
+
+  rec.cnt = (tonumber(rec.cnt) or 0) + cnt
+end
+
+local function flush_deferred_transit_take(ins_rec, tick, ins_unit, item, cnt, qual)
+  cnt = tonumber(cnt) or 0
+  if not ins_rec or not item or cnt <= 0 then return 0 end
+
+  qual = qual or "normal"
+  local key = vkey(item, qual)
+  if not key then return 0 end
+
+  local pending_map = ins_rec.deferred_transit_take
+  local pending = pending_map and pending_map[key]
+  local available = pending and tonumber(pending.cnt) or 0
+
+  -- No deferred unknown-source pickup exists for this item/quality.
+  -- Therefore do not create a retrograde T00 clearing entry.
+  if available <= 0 then
+    return 0
+  end
+
+  -- Important:
+  -- Use the confirmed GIVE quantity, not the previously observed pickup quantity.
+  -- The pickup-side count is exactly the unstable part for belt interactions.
+  local booked = cnt
+
+  push_event({
+    tick = tick,
+    ins_id = ins_rec.id,
+    ins_unit = ins_unit,
+    kind = "TAKE",
+    obj = OBJ_TRANSIT,
+    obj_unit = nil,
+    item = item,
+    cnt = booked,
+    qual = qual
+  })
+
+  -- The pending amount is only a marker/buffer, not a hard accounting limit.
+  -- If GIVE exceeds the observed pickup amount, clear the marker.
+  -- If only part of the pending amount was given, keep the remainder.
+  pending.cnt = available - booked
+  if pending.cnt <= 0 then
+    pending_map[key] = nil
+  end
+
+  return booked
+end
+
+
+
+
+
+
 
 -- Player inventory pseudo objects
 local function fmt_player_inv_id_from_hand_id(hand_id)
@@ -631,26 +920,12 @@ function Transaction.ingest_manual_logistics_event(le)
 end
 
 local function opposite_obj(ins_unit, src_obj, dst_obj)
-  local is_active = Transaction.is_inserter_active and Transaction.is_inserter_active(ins_unit)
+  if src_obj and (not dst_obj) then
+    return unknown_destination_obj(ins_unit, src_obj, dst_obj)
+  end
 
-  if is_active then
-    -- NEW: WIP mode overrides interface postings (still boundary)
-    if storage.tx_wip_inserters and storage.tx_wip_inserters[ins_unit] == true then
-      return OBJ_WIP
-    end
-
-    -- Prefer cached boundary direction (robust against transient target resolution)
-    local meta = storage.tx_watch_meta and storage.tx_watch_meta[ins_unit]
-    local b = meta and meta.boundary or nil
-    if b == "ship" then return OBJ_SHIP end
-    if b == "recv" then return OBJ_RECV end
-
-    -- Fallback: infer from current resolved sides
-    if src_obj and (not dst_obj) then
-      return OBJ_SHIP
-    elseif (not src_obj) and dst_obj then
-      return OBJ_RECV
-    end
+  if (not src_obj) and dst_obj then
+    return unknown_source_obj(ins_unit, src_obj, dst_obj)
   end
 
   return OBJ_TRANSIT
@@ -878,6 +1153,179 @@ end
 -- Watchlist rebuild
 -- -----------------------------------------
 
+function Transaction.autoregister_machine_closure(player, log)
+  ensure_defaults()
+
+  if not (Chests and Chests.register_machine_entity and Chests.is_machine_entity) then
+    return 0
+  end
+
+  local total_added = 0
+  local max_passes = 100
+  local pass = 0
+  local scan_radius = 20
+
+  local function scan_registered_object(rec)
+    if not (rec and rec.surface_index and rec.position) then return 0 end
+
+    local surface = game.get_surface(rec.surface_index)
+    if not (surface and surface.valid) then return 0 end
+
+    local pos = rec.position
+    local area = {
+      { pos.x - scan_radius, pos.y - scan_radius },
+      { pos.x + scan_radius, pos.y + scan_radius }
+    }
+
+    local all = surface.find_entities_filtered{
+      area = area,
+      type = "inserter"
+    } or {}
+
+    local added = 0
+
+    for _, ins in pairs(all) do
+      if ins and ins.valid and ins.unit_number then
+        local pick, drop = get_targets(ins)
+
+        local src_obj = obj_id_for_entity(pick)
+        local dst_obj = obj_id_for_entity(drop)
+
+        -- registriertes Objekt -> unregistrierte Maschine
+        if src_obj and (not dst_obj) and Chests.is_machine_entity(drop) then
+          local ok = Chests.register_machine_entity(drop, log, "closure_drop")
+          if ok then added = added + 1 end
+        end
+
+        -- unregistrierte Maschine -> registriertes Objekt
+        if dst_obj and (not src_obj) and Chests.is_machine_entity(pick) then
+          local ok = Chests.register_machine_entity(pick, log, "closure_pick")
+          if ok then added = added + 1 end
+        end
+      end
+    end
+
+    return added
+  end
+
+  while pass < max_passes do
+    pass = pass + 1
+
+    -- wichtig: neue Mxx müssen sofort in tx_obj_by_unit sichtbar werden
+    Transaction.rebuild_object_map()
+
+    local added_this_pass = 0
+
+    for _, rec in pairs(storage.registry or {}) do
+      added_this_pass = added_this_pass + scan_registered_object(rec)
+    end
+
+    for _, rec in pairs(storage.machines or {}) do
+      added_this_pass = added_this_pass + scan_registered_object(rec)
+    end
+
+    total_added = total_added + added_this_pass
+
+    if added_this_pass == 0 then
+      break
+    end
+  end
+
+  if total_added > 0 then
+    Transaction.rebuild_object_map()
+    storage.marker_dirty = true
+
+    if player and player.valid then
+      Util.info_print(player, {"", "[LogSim] auto machines registered: ", tostring(total_added)})
+    end
+  end
+
+  return total_added
+end
+
+function Transaction.is_machine_required_by_closure(machine_unit)
+  ensure_defaults()
+
+  if not machine_unit then return false end
+
+  local mrec = storage.machines and storage.machines[machine_unit]
+  if not mrec then return false end
+
+  -- Current registry state must be reflected in tx_obj_by_unit.
+  if Transaction.rebuild_object_map then
+    Transaction.rebuild_object_map()
+  end
+
+  local scan_radius = 20
+
+  local function scan_registered_object(rec)
+    if not (rec and rec.surface_index and rec.position) then return false end
+
+    local surface = game.get_surface(rec.surface_index)
+    if not (surface and surface.valid) then return false end
+
+    local pos = rec.position
+    local area = {
+      { pos.x - scan_radius, pos.y - scan_radius },
+      { pos.x + scan_radius, pos.y + scan_radius }
+    }
+
+    local all = surface.find_entities_filtered{
+      area = area,
+      type = "inserter"
+    } or {}
+
+    for _, ins in pairs(all) do
+      if ins and ins.valid and ins.unit_number then
+        local pick, drop = get_targets(ins)
+
+        local src_obj = obj_id_for_entity(pick)
+        local dst_obj = obj_id_for_entity(drop)
+
+        -- Registered object feeds exactly this machine.
+        -- If this machine were unregistered, input would disappear into Transit
+        -- and the later transformed output would reappear from an unknown source.
+        if src_obj
+           and drop
+           and drop.valid
+           and drop.unit_number == machine_unit then
+          return true
+        end
+
+        -- Symmetric case: this machine feeds a registered object.
+        -- This keeps the accounting boundary closed in both directions.
+        if dst_obj
+           and pick
+           and pick.valid
+           and pick.unit_number == machine_unit then
+          return true
+        end
+      end
+    end
+
+    return false
+  end
+
+  -- Registered chests/tanks.
+  for _, rec in pairs(storage.registry or {}) do
+    if scan_registered_object(rec) then
+      return true
+    end
+  end
+
+  -- Registered machines, except the machine currently selected for removal.
+  -- A machine must not justify its own protection.
+  for unit, rec in pairs(storage.machines or {}) do
+    if unit ~= machine_unit then
+      if scan_registered_object(rec) then
+        return true
+      end
+    end
+  end
+
+  return false
+end
+
 function Transaction.rebuild_watchlist()
   ensure_defaults()
 
@@ -1013,6 +1461,34 @@ end
 -- Tick processing
 -- -----------------------------------------
 
+local function book_take(ev_base, obj, obj_unit, item, cnt, qual)
+  push_event({
+    tick = ev_base.tick,
+    ins_id = ev_base.ins_id,
+    ins_unit = ev_base.ins_unit,
+    kind = "TAKE",
+    obj = obj,
+    obj_unit = obj_unit,
+    item = item,
+    cnt = cnt,
+    qual = qual or "normal"
+  })
+end
+
+local function book_give(ev_base, obj, obj_unit, item, cnt, qual)
+  push_event({
+    tick = ev_base.tick,
+    ins_id = ev_base.ins_id,
+    ins_unit = ev_base.ins_unit,
+    kind = "GIVE",
+    obj = obj,
+    obj_unit = obj_unit,
+    item = item,
+    cnt = cnt,
+    qual = qual or "normal"
+  })
+end
+
 local function process_inserter(ins, tick)
   if not (ins and ins.valid and ins.unit_number) then return end
 
@@ -1032,19 +1508,24 @@ local function process_inserter(ins, tick)
 
   -- Transition: empty -> filled  => TAKE
   if (not last) and now then
-    local src = src_obj or opposite_obj(ins_unit, src_obj, dst_obj)
+    local item = now.name
+    local cnt = now.count
+    local qual = now.quality or "normal"
+    local ev_base = { tick = tick, ins_id = ins_rec.id, ins_unit = ins_unit }
 
-    push_event({
-      tick = tick,
-      ins_id = ins_rec.id,
-      ins_unit = ins_unit,
-      kind = "TAKE",
-      obj = src,
-      obj_unit = pick and pick.unit_number or nil,
-      item = now.name,
-      cnt = now.count,
-      qual = now.quality or "normal"
-    })
+    if src_obj then
+      -- Registered source is the reliable side.
+      book_take(ev_base, src_obj, pick and pick.unit_number or nil, item, cnt, qual)
+
+      if not dst_obj then
+        -- Do not wait for the physical belt drop delta.
+        -- Unknown destination means transit; clear by the confirmed TAKE quantity.
+        book_give(ev_base, unknown_destination_obj(ins_unit, src_obj, dst_obj), nil, item, cnt, qual)
+      end
+    else
+      -- Do not book TAKE T00 here.
+      -- Unknown source means transit; clear T00 later when a registered GIVE is confirmed.
+    end
 
     ins_rec.last = now
     return
@@ -1052,19 +1533,28 @@ local function process_inserter(ins, tick)
 
   -- Transition: filled -> empty  => GIVE
   if last and (not now) then
-    local dst = dst_obj or opposite_obj(ins_unit, src_obj, dst_obj)
+    local item = last.name
+    local cnt = last.count
+    local qual = last.quality or "normal"
+    local ev_base = { tick = tick, ins_id = ins_rec.id, ins_unit = ins_unit }
 
-    push_event({
-      tick = tick,
-      ins_id = ins_rec.id,
-      ins_unit = ins_unit,
-      kind = "GIVE",
-      obj = dst,
-      obj_unit = drop and drop.unit_number or nil,
-      item = last.name,
-      cnt = last.count,
-      qual = last.quality or "normal"
-    })
+    if dst_obj then
+      if not src_obj then
+        -- Do not rely on the physical belt pickup delta.
+        -- Unknown source means transit; clear T00 by the confirmed GIVE quantity.
+        book_take(ev_base, unknown_source_obj(ins_unit, src_obj, dst_obj), nil, item, cnt, qual)
+      end
+
+      book_give(ev_base, dst_obj, drop and drop.unit_number or nil, item, cnt, qual)
+    else
+      -- Unknown destination means transit.
+      -- If source was registered, the corresponding GIVE T00 was already booked
+      -- together with the confirmed TAKE. Do not book the belt drop delta again.
+      if not src_obj then
+        -- Fully unknown movement; keep previous fallback behavior minimal.
+        book_give(ev_base, opposite_obj(ins_unit, src_obj, dst_obj), drop and drop.unit_number or nil, item, cnt, qual)
+      end
+    end
 
     ins_rec.last = nil
     return
@@ -1080,36 +1570,51 @@ local function process_inserter(ins, tick)
     local delta = (tonumber(now.count) or 0) - (tonumber(last.count) or 0)
 
     if delta > 0 then
-      local src = src_obj or opposite_obj(ins_unit, src_obj, dst_obj)
+      local item = now.name
+      local cnt = delta
+      local qual = now.quality or "normal"
+      local ev_base = { tick = tick, ins_id = ins_rec.id, ins_unit = ins_unit }
 
-      push_event({
-        tick = tick,
-        ins_id = ins_rec.id,
-        ins_unit = ins_unit,
-        kind = "TAKE",
-        obj = src,
-        obj_unit = pick and pick.unit_number or nil,
-        item = now.name,
-        cnt = delta,
-        qual = now.quality or "normal"
-      })
+      if src_obj then
+        -- Registered source is the reliable side.
+        book_take(ev_base, src_obj, pick and pick.unit_number or nil, item, cnt, qual)
+
+        if not dst_obj then
+          -- Unknown destination means transit.
+          -- Book GIVE T00 immediately with the confirmed TAKE delta.
+          book_give(ev_base, unknown_destination_obj(ins_unit, src_obj, dst_obj), nil, item, cnt, qual)
+        end
+      else
+        -- Do not book TAKE T00 here.
+        -- Unknown source means transit; wait for confirmed GIVE into a registered object.
+      end
 
       ins_rec.last = now
       return
-    elseif delta < 0 then
-      local dst = dst_obj or opposite_obj(ins_unit, src_obj, dst_obj)
 
-      push_event({
-        tick = tick,
-        ins_id = ins_rec.id,
-        ins_unit = ins_unit,
-        kind = "GIVE",
-        obj = dst,
-        obj_unit = drop and drop.unit_number or nil,
-        item = last.name,
-        cnt = -delta,
-        qual = last.quality or "normal"
-      })
+    elseif delta < 0 then
+      local item = last.name
+      local cnt = -delta
+      local qual = last.quality or "normal"
+      local ev_base = { tick = tick, ins_id = ins_rec.id, ins_unit = ins_unit }
+
+      if dst_obj then
+        if not src_obj then
+          -- Unknown source means transit.
+          -- Book TAKE T00 immediately with the confirmed GIVE delta.
+          book_take(ev_base, unknown_source_obj(ins_unit, src_obj, dst_obj), nil, item, cnt, qual)
+        end
+
+        book_give(ev_base, dst_obj, drop and drop.unit_number or nil, item, cnt, qual)
+      else
+        -- Unknown destination means transit.
+        -- If the source was registered, GIVE T00 was already booked with TAKE.
+        -- Do not book the observed belt-drop delta again.
+        if not src_obj then
+          -- Fully unknown fallback, normally irrelevant because such inserters are not watched.
+          book_give(ev_base, opposite_obj(ins_unit, src_obj, dst_obj), drop and drop.unit_number or nil, item, cnt, qual)
+        end
+      end
 
       ins_rec.last = now
       return
@@ -1512,13 +2017,10 @@ end
 function Transaction.reset_tx_log()
   ensure_defaults()
 
-  -- Clear only the TX event log + viewer state.
-  -- IMPORTANT: keep active inserter markings (green) and inserter IDs stable.
+  -- Clear TX event log + virtual balances 
+  -- Reset also clears WIP mode flags so all watched inserters start as normal.
   storage.tx_events = {}
   storage.tx_virtual = { T00 = {}, SHIP = {}, RECV = {}, WIP = {}, MAN = {} }
-
-  -- NEW: clear WIP mode flags
-  storage.tx_wip_inserters = {}
 
   -- Ringbuffer state reset (keep configured max, reset pointers + ids)
   storage.tx_head = 1
@@ -1534,12 +2036,10 @@ function Transaction.reset_tx_log()
   storage.tx_dbg_watch = nil
   storage.tx_last_rebuild_tick = 0
 
-  -- Viewer state
   storage.tx_view = {}
   storage.tx_gui_dirty = {}
   storage._tx_last_gui_refresh_tick = 0
 
-  -- Rebuild immediately so marks/colors come back without waiting
   if Transaction.rebuild_object_map then Transaction.rebuild_object_map() end
   if Transaction.rebuild_watchlist then Transaction.rebuild_watchlist() end
   Transaction.update_marks()

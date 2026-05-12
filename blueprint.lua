@@ -8,7 +8,8 @@
 -- version 0.8.3 EMA Module – Exponential Moving Average über Bestände
 -- version 0.8.4 extract from blueprint with tabs
 --               compatibility extract from bleuprintbook
--- Version 0.9.0 Stable Ledger Operational Baseline 
+-- Version 0.9.0 Stable Ledger Operational Baseline
+-- Version 0.9.1 build_system_text storage.current_daytime_text 
 --
 -- =========================================
 
@@ -19,7 +20,7 @@ local EMA = require("ema")
 
 
 local Blueprint = {}
-  Blueprint.version = "0.9.0"
+  Blueprint.version = "0.9.1"
 
 -- Session storage (not persistent)
 local bp_session = {
@@ -466,6 +467,7 @@ local function build_system_text(player)
 
   lines[#lines + 1] = "# ----"
   lines[#lines + 1] = "# SYSTEM/MODS (tick=" .. tostring(game.tick) .. ")"
+  lines[#lines + 1] = "# factorio_time=" .. tostring(storage.current_daytime_text or "NA")
 
   local ok_lvl, lvl = pcall(function()
     return script.level

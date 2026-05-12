@@ -16,12 +16,13 @@
 -- Version 0.8.8 EMA Module – Exponential Moving Average Curretn Assets
 --               extract from blueprint with tabs
 -- Version 0.9.0 Stable Ledger Operational Baseline 
+-- Version 0.9.1 Button to activate/deactivate Day/Night
 --
 -- =========================================
 
 local M = {}
 
-M.version = "0.9.0"
+M.version = "0.9.1"
 
 M.DEBUG = true
 
@@ -223,6 +224,7 @@ M.TOPBAR_ROOT = "ls_topbar_root"
 M.TOPBAR_BTN1 = "ls_topbar_btn1"
 M.TOPBAR_BTN2 = "ls_topbar_btn2"
 M.TOPBAR_BTN3 = "ls_topbar_btn3"
+M.TOPBAR_BTN4 = "logsim_topbar_btn4"
 
 -- Sprite-Namen für die Buttons
 M.TOPBAR_BTN1_SPRITE = "ls_button1_icon"
@@ -230,11 +232,14 @@ M.TOPBAR_BTN2_ON_SPRITE = "ls_toggle_on_icon"
 M.TOPBAR_BTN2_OFF_SPRITE = "ls_toggle_off_icon"
 M.TOPBAR_BTN3_ON_SPRITE = "ls_toggle2_on_icon"
 M.TOPBAR_BTN3_OFF_SPRITE = "ls_toggle2_off_icon"
+M.TOPBAR_BTN4_ON_SPRITE   = "ls_day_on_icon"
+M.TOPBAR_BTN4_OFF_SPRITE  = "ls_day_off_icon"
 
 -- Tooltips (Locale-Keys)
 M.TOPBAR_BTN1_TOOLTIP = {"logistics_simulation.topbar_btn1_tooltip"}
 M.TOPBAR_BTN2_TOOLTIP = {"logistics_simulation.topbar_btn2_tooltip"}
 M.TOPBAR_BTN3_TOOLTIP = {"logistics_simulation.topbar_btn3_tooltip"}
+M.TOPBAR_BTN4_TOOLTIP = {"logistics_simulation.topbar_btn4_tooltip"}
 
 -- (Storage keys for toggle states removed; see storage.protocol_active / storage.gp_enabled)
 

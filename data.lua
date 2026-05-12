@@ -55,5 +55,23 @@ data:extend({
     height = 32,
     mipmap_count = 1,
     flags = {"gui-icon"}
+  },
+  {
+    type = "sprite",
+    name = "ls_day_on_icon",
+    filename = "__logistics_simulation__/graphics/sun-icon.png",
+    width = 32, 
+    height = 32,
+    mipmap_count = 1,
+    flags = {"gui-icon"}
+  },
+  {
+    type = "sprite",
+    name = "ls_day_off_icon",
+    filename = "__logistics_simulation__/graphics/daynight-icon.png",
+    width = 32, 
+    height = 32,
+    mipmap_count = 1,
+    flags = {"gui-icon"}
   }
 })

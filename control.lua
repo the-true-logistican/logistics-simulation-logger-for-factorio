@@ -40,6 +40,9 @@
 -- Version 0.8.15 EMA Module – Exponential Moving Average über Bestände
 --                extract from blueprint with tabs
 -- Version 0.9.0 Stable Ledger Operational Baseline 
+-- Version 0.9.1 Button to activate/deactivate Day/Night
+--               NEW storage.current_daytime_text
+--               registering chests is now transitiv to machines to avoid implicit WIP
 --
 -- =========================================
 -- Version 0.9 consolidates Factory Ledger into an operational pre-1.0 baseline. 
@@ -228,7 +231,7 @@ end
 -- Custom Inputs (Hotkeys)
 -- -----------------------------------------
 
--- NEW: Shift+R - if inserter is selected, allow activation ONLY if watched
+-- Shift+R - if inserter is selected, allow activation ONLY if watched
 local function hotkey_register_chest(event)
   local player = game.players[event.player_index]
   if not (player and player.valid) then return end
@@ -244,13 +247,24 @@ local function hotkey_register_chest(event)
   -- Default behavior (registry)
   Chests.register_selected(player, Buffer.append_line)
 
-  -- After registering objects: refresh TX maps/watch immediately
+  -- After registering objects: first rebuild object map
+  if Transaction and Transaction.rebuild_object_map then
+    Transaction.rebuild_object_map()
+  end
+
+  -- Then close machine chain: registered object -> inserter -> machine -> ...
+  if Transaction and Transaction.autoregister_machine_closure then
+    Transaction.autoregister_machine_closure(player, Buffer.append_line)
+  end
+
+  -- Finally refresh TX maps/watch after automatic registrations
   if Transaction and Transaction.rebuild_object_map then
     Transaction.rebuild_object_map()
   end
   if Transaction and Transaction.rebuild_watchlist then
     Transaction.rebuild_watchlist()
   end
+
 end
 
 local function hotkey_register_protect(event)
@@ -258,7 +272,7 @@ local function hotkey_register_protect(event)
   Chests.register_protect(player, Buffer.append_line)
 end
 
--- NEW: Shift+U - if inserter is selected, clear active marking (back to yellow)
+-- Shift+U - if inserter is selected, clear active marking (back to yellow)
 local function hotkey_unregister_selected(event)
   local player = game.players[event.player_index]
   if not (player and player.valid) then return end
@@ -272,8 +286,35 @@ local function hotkey_unregister_selected(event)
     return
   end
 
+  -- Guard: prevent unregistering a machine that is still required
+  -- to keep the registered logistics boundary closed.
+  if ent and ent.valid and ent.unit_number
+     and storage.machines
+     and storage.machines[ent.unit_number]
+     and Transaction
+     and Transaction.is_machine_required_by_closure
+     and Transaction.is_machine_required_by_closure(ent.unit_number) then
+
+    local mrec = storage.machines[ent.unit_number]
+
+    Util.info_print(player, {"", "[LogSim] Cannot unregister ", mrec.id or "?", ": machine is still required by registered objects."})
+    Util.fly(player, ent, {"", "KEEP ", mrec.id or "?"})
+
+    if Buffer and Buffer.append_line then
+      Buffer.append_line(string.format(
+        "EV;%d;UNMACH_BLOCKED;%s;%d;reason=closure_required",
+        game.tick,
+        mrec.id or "?",
+        ent.unit_number
+      ))
+    end
+
+    return
+  end
+
   -- default behavior
   Chests.unregister_selected(player, Buffer.append_line)
+
   -- after unregistering objects, refresh TX maps/watch immediately
   if Transaction and Transaction.rebuild_object_map then
     Transaction.rebuild_object_map()
@@ -550,7 +591,7 @@ for _, player in pairs(game.players) do
       
       -- Jetzt kannst du die Oberfläche für deine Zeitberechnung nutzen
       local zeit = Util.to_excel_daystime(tick, surface)
-      
+      storage.current_daytime_text = zeit      
       UI.set_status_text(player, zeit)
     end
   end
@@ -686,7 +727,8 @@ script.on_event(defines.events.on_gui_click, function(event)
   -- Zuerst prüfen, ob es einer unserer Topbar-Buttons ist
   if element.name == M.TOPBAR_BTN1 or 
      element.name == M.TOPBAR_BTN2 or 
-     element.name == M.TOPBAR_BTN3 then
+     element.name == M.TOPBAR_BTN3 or 
+     element.name == M.TOPBAR_BTN4 then
     GUI.handle_topbar_click(event, player, element)  -- Jetzt über GUI
     return
   end

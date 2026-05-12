@@ -14,6 +14,7 @@
 -- Version 0.8.5 sync topbar with statuw
 --               extract from blueprint with tabs
 -- Version 0.9.0 Stable Ledger Operational Baseline 
+-- Version 0.9.1 Button to activate/deactivate Day/Night
 --
 -- =========================================
 
@@ -22,7 +23,7 @@ local Util = require("utility")
 local mod_gui = require("mod-gui")
 
 local UI = {}
-UI.version = "0.9.0"
+UI.version = "0.9.1"
 
 local FRAME_NAME = "logsim_ui_placeholder_frame"
 local LABEL_NAME = "logsim_ui_placeholder_label"
@@ -1219,6 +1220,18 @@ function UI.build_topbar(player)
     tooltip = M.TOPBAR_BTN3_TOOLTIP,
     style = "slot_button"
   }
+
+
+local toggle4_sprite = (storage and storage.permanent_day) and M.TOPBAR_BTN4_ON_SPRITE or M.TOPBAR_BTN4_OFF_SPRITE
+
+flow.add{
+  type    = "sprite-button",
+  name    = M.TOPBAR_BTN4,
+  sprite  = toggle4_sprite,
+  tooltip = M.TOPBAR_BTN4_TOOLTIP,
+  style   = "slot_button"
+}
+
 end
 
 -- Helper: Alle Topbars neu aufbauen (nach Load/Init)

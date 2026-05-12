@@ -5,6 +5,10 @@
 -- version 0.8.7 new introduced
 --               extract from blueprint with tabs
 -- Version 0.9.0 Stable Ledger Operational Baseline 
+-- Version 0.9.1 Button to activate/deactivate Day/Night
+--               reset of statistics independant form reset simulation
+--               clear EMA with reset of statistics 
+--
 -- =========================================
 
 local M = require("config")
@@ -20,7 +24,7 @@ local mod_gui = require("mod-gui")
 local EMA = require("ema") 
 
 local GUI = {}
-GUI.version = "0.9.0"
+GUI.version = "0.9.1"
 
 
 -- =========================================
@@ -99,8 +103,50 @@ function GUI.update_topbar_buttons()
         local new_sprite = storage.gp_enabled and M.TOPBAR_BTN3_ON_SPRITE or M.TOPBAR_BTN3_OFF_SPRITE
         btn3.sprite = new_sprite
       end
+
+      -- Button 4 day/night update
+      local btn4 = root[M.TOPBAR_BTN4]
+      if btn4 and btn4.valid then
+        btn4.sprite = storage.permanent_day 
+          and M.TOPBAR_BTN4_ON_SPRITE 
+          or  M.TOPBAR_BTN4_OFF_SPRITE
+      end
+
     end
   end
+end
+
+
+function GUI.set_permanent_day_state(player, surface, state)
+  storage.permanent_day = state
+  local s = player.surface
+  if s and s.valid then
+    if state then
+      -- Zeit merken bevor wir einfrieren
+      storage.saved_daytime = s.daytime
+      s.always_day = true      -- setzt freeze=true + daytime=0 (Mittag)
+    else
+      s.always_day = false
+      s.freeze_daytime = false
+      -- Zeit-Offset berechnen: wieviel Ticks sind seit dem Einfrieren vergangen?
+      local tpd = s.ticks_per_day or 25000
+      local ticks_frozen = game.tick - (storage.day_freeze_tick or game.tick)
+      local offset = (ticks_frozen % tpd) / tpd
+      -- Weiterlaufen ab der richtigen Stelle
+      s.daytime = (storage.saved_daytime + offset) % 1.0
+    end
+  end
+  -- Tick merken wann eingefroren wurde
+  if state then
+    storage.day_freeze_tick = game.tick
+  end  if player then
+    if state then
+      player.print({"logistics_simulation.cmd_day_on"})
+    else
+      player.print({"logistics_simulation.cmd_day_off"})
+    end
+  end
+  GUI.update_topbar_buttons()
 end
 
 -- Topbar Click Handler
@@ -135,6 +181,14 @@ function GUI.handle_topbar_click(event, player, element)
     local new_sprite = new_state and M.TOPBAR_BTN3_ON_SPRITE or M.TOPBAR_BTN3_OFF_SPRITE
     element.sprite = new_sprite
     
+    return true
+  end
+
+  -- Button 4: permanent day / day-night toggle
+  if name == M.TOPBAR_BTN4 then
+    local new_state = not storage.permanent_day
+    GUI.set_permanent_day_state(player, surface, new_state)
+    element.sprite = new_state and M.TOPBAR_BTN4_ON_SPRITE or M.TOPBAR_BTN4_OFF_SPRITE
     return true
   end
   
@@ -336,7 +390,7 @@ function GUI.click_reset_ok(event)
   end
 
   if opts.del_items then
-    R.do_reset_simulation(player.surface, player.force, Buffer.append_line, opts.del_stats)
+    R.do_reset_simulation(player.surface, player.force, Buffer.append_line)
   end
 
   if opts.del_playerinv then
@@ -369,16 +423,16 @@ function GUI.click_reset_ok(event)
     Buffer.append_multiline(header)
   end
 
-  local did_reset =
-    opts.del_items
-    or opts.del_playerinv
-    or opts.del_chests
-    or opts.del_machines
-    or opts.del_prot
-    or opts.del_log
+  if opts.del_stats then
+    R.reset_statistics(player.surface, player.force, Buffer.append_line)
+  end
 
-  if did_reset and EMA and EMA.reset_to_current then
-    EMA.reset_to_current(player.surface.index, game.tick)
+  if opts.del_stats and EMA and EMA.reset_to_current then
+    -- EMA nur zurücksetzen wenn "Reset Statistics" aktiv war.
+    -- del_stats = true bedeutet: Fabrik-Statistiken werden gecleart →
+    -- EMA-Snapshot ebenfalls neu initialisieren, sonst stehen alte
+    -- kumulierte Salden (T00-Leck, WIP-Fehlbuchungen) weiter drin.
+      EMA.reset_to_current(player.surface.index, game.tick)
   end
 
   Buffer.refresh_for_player(player)
