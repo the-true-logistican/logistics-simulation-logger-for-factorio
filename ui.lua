@@ -1,20 +1,20 @@
 -- =========================================
--- LogSim (Factorio 2.0) 
--- All GUI creation and interaction logic (buffer, transactions, export, reset, blueprint views).
--- version 0.8.0 first complete working version
--- version 0.8.1 tx window with buttons <<  <  >  >> 
---               simple filter for transactions with checkboxes
--- version 0.8.2 close export Dialog, if owner ist closed
---               Blueprint.ui_front_tick_handler()
--- version 0.8.3 filter for manual transaction of the player
--- version 0.8.4 Reset clears players inventory too
---               Simple Days-Time-Clock
---               new topbar show, prot on/off, global power
---               show_xxxx if exists then bring_to_front + return
--- Version 0.8.5 sync topbar with statuw
---               extract from blueprint with tabs
--- Version 0.9.0 Stable Ledger Operational Baseline 
--- Version 0.9.1 Button to activate/deactivate Day/Night
+-- LogSim (Factorio 2.0)
+-- GUI Module
+--
+-- Creates and updates GUI windows for buffer, export, reset,
+-- blueprint reports, inventory reports, transaction viewer and topbar buttons.
+--
+-- Version 0.8.0 first complete working version
+-- Version 0.8.1 transaction window and filters
+-- Version 0.8.2 export dialog ownership handling
+-- Version 0.8.3 manual transaction filter
+-- Version 0.8.4 player inventory reset and day/time clock
+-- Version 0.8.5 topbar state synchronization
+-- Version 0.9.0 Stable Ledger Operational Baseline
+-- Version 0.9.1 day/night toggle button
+-- Version 0.9.2 UI.find_by_name(root, target) public
+-- Version 0.9.3 local cleanup and English technical comments
 --
 -- =========================================
 
@@ -23,91 +23,75 @@ local Util = require("utility")
 local mod_gui = require("mod-gui")
 
 local UI = {}
-UI.version = "0.9.1"
+UI.version = "0.9.3"
 
 local FRAME_NAME = "logsim_ui_placeholder_frame"
 local LABEL_NAME = "logsim_ui_placeholder_label"
 
 function UI.ensure_placeholder_frame(player)
-    if not (player and player.valid) then return end
-    
-    -- GEÄNDERT: button_flow statt frame_flow
-    local flow = mod_gui.get_button_flow(player)
-    local frame = flow[FRAME_NAME]
-    
-    if not (frame and frame.valid) then
-        frame = flow.add{
-            type = "frame",
-            name = FRAME_NAME,
-            direction = "vertical"
-        }  
-        frame.style.width = 120
-        frame.style.padding = 6
-    end
-    
-    if not (frame[LABEL_NAME] and frame[LABEL_NAME].valid) then
-        local label = frame.add{
-            type = "label",
-            name = LABEL_NAME,
-            caption = ""
-        }
-        label.style.font = "default-bold"
-        label.style.single_line = false
-        label.style.maximal_width = 120
-    end
+  if not (player and player.valid) then return end
 
-    UI.build_topbar(player)
+  local flow = mod_gui.get_button_flow(player)
+  local frame = flow[FRAME_NAME]
+
+  if not (frame and frame.valid) then
+    frame = flow.add{
+      type = "frame",
+      name = FRAME_NAME,
+      direction = "vertical"
+    }
+    frame.style.width = 120
+    frame.style.padding = 6
+  end
+
+  if not (frame[LABEL_NAME] and frame[LABEL_NAME].valid) then
+    local label = frame.add{
+      type = "label",
+      name = LABEL_NAME,
+      caption = ""
+    }
+    label.style.font = "default-bold"
+    label.style.single_line = false
+    label.style.maximal_width = 120
+  end
+
+  UI.build_topbar(player)
 end
 
 local function set_status_text(player, text)
-    if not (player and player.valid) then return end
-    
-    local flow = mod_gui.get_button_flow(player)
-    local frame = flow[FRAME_NAME]
-    
-    if not (frame and frame.valid) then return end
-    local label = frame[LABEL_NAME]
-    if not (label and label.valid) then return end
-    
-    label.caption = text or ""
-    
-    -- Darkness-Wert holen (0 = voller Tag, 1 = tiefste Nacht)
-    local darkness = player.surface.darkness
-    
-    -- Wenn darkness > 0.5, dann ist es "Nacht"
-    local is_night = (darkness > 0.5)
-    
-    if is_night then
-        -- NACHT: Helle Schrift (z.B. Gelb oder Hellblau)
-        label.style.font_color = {r=0.6, g=0.7, b=1}  -- Blaue Nacht
-    else
-        -- TAG: Normale/dunkle Schrift
-        label.style.font_color = {r=1, g=1, b=0.7}  -- Sonnengelb
-    end
+  if not (player and player.valid) then return end
+
+  local flow = mod_gui.get_button_flow(player)
+  local frame = flow[FRAME_NAME]
+  if not (frame and frame.valid) then return end
+
+  local label = frame[LABEL_NAME]
+  if not (label and label.valid) then return end
+
+  label.caption = text or ""
+
+  -- Surface darkness is used only to keep the status label readable.
+  local darkness = player.surface.darkness
+  local is_night = darkness > 0.5
+
+  if is_night then
+    label.style.font_color = { r = 0.6, g = 0.7, b = 1 }
+  else
+    label.style.font_color = { r = 1, g = 1, b = 0.7 }
+  end
 end
 
-
--- DAS ist die wichtige Funktion
 function UI.set_status_text(player, text)
-    if not (player and player.valid) then return end
-    
-    set_status_text(player, text)
-
-    local flow = mod_gui.get_button_flow(player)
-    local frame = flow[FRAME_NAME]
-    
-    if not (frame and frame.valid) then return end
-    local label = frame[LABEL_NAME]
-    if not (label and label.valid) then return end
-    
-    label.caption = text or ""
+  set_status_text(player, text)
 end
 
--- =======================
--- functions for markers
--- =======================
+-- =========================================
+-- Marker helpers
+-- =========================================
 
--- --- internal helpers --------------------------------------------------------
+-- -----------------------------------------
+-- Rendering object helpers
+-- -----------------------------------------
 
 local function _as_render_object(x)
   if not x then return nil end
@@ -137,7 +121,7 @@ end
 local function _norm_offset(off, fallback_x, fallback_y)
   off = off or { x = fallback_x or 0, y = fallback_y or -1.0 }
 
-  -- Accept either {x=..., y=...} or { [1]=..., [2]=... }
+  -- Accept either { x = ..., y = ... } or { [1]=..., [2]=... }
   if off.x ~= nil or off.y ~= nil then
     return { (off.x or fallback_x or 0), (off.y or fallback_y or -1.0) }
   end
@@ -145,7 +129,7 @@ local function _norm_offset(off, fallback_x, fallback_y)
 end
 
 local function _style_key(color, offset, scale, alignment)
-  -- stable-ish key to detect when we must redraw
+  -- Stable key used to detect when marker redraw is required.
   return table.concat({
     string.format("%.3f", color.r), string.format("%.3f", color.g),
     string.format("%.3f", color.b), string.format("%.3f", color.a),
@@ -163,22 +147,24 @@ function UI.bring_inventory_overlay_to_front(player)
   end
 end
 
--- --- public API --------------------------------------------------------------
+-- -----------------------------------------
+-- Marker public API
+-- -----------------------------------------
 
 --- Update (or create) a text marker attached to an entity.
 --- rec: table that can hold marker state (rec.marker_text will be stored here)
 --- ent: LuaEntity (or nil to clear)
 --- text: string
 --- style: {
----   color = {r,g,b,a?},
----   offset = {x=..., y=...} OR {dx, dy},
+---   color = { r, g, b, a? },
+---   offset = { x = ..., y = ... } OR {dx, dy},
 ---   scale = number,
 ---   alignment = "center" (optional)
 --- }
 function UI.marker_text_update(rec, ent, text, style)
   if not rec then return end
 
-  -- clear if entity is invalid / absent
+  -- Clear marker state when the entity is invalid or absent.
   if not (ent and ent.valid) then
     _destroy_render(rec.marker_text)
     rec.marker_text = nil
@@ -207,7 +193,7 @@ function UI.marker_text_update(rec, ent, text, style)
   local target = { entity = ent, offset = offset }
 
   if not (obj and obj.valid) then
-    -- Create with offset
+    -- Create text marker with offset.
     rec.marker_text = rendering.draw_text{
       text = text or "",
       surface = ent.surface,
@@ -217,12 +203,12 @@ function UI.marker_text_update(rec, ent, text, style)
       scale = scale
     }
   else
-    -- Update: KEEP offset by setting target as ScriptRenderTargetTable again
+    -- Preserve offset by assigning a ScriptRenderTargetTable.
     obj.target = target
     obj.text = text or ""
   end
 end
---- Explicit clear helper (optional convenience)
+-- Explicit marker clear helper.
 function UI.marker_text_clear(rec)
   if not rec then return end
   _destroy_render(rec.marker_text)
@@ -230,9 +216,9 @@ function UI.marker_text_clear(rec)
   rec._marker_text_style_key = nil
 end
 
--- =======================
--- winwis etc.
--- =======================
+-- =========================================
+-- Base windows
+-- =========================================
 
 function UI.show_runname_gui(player)
   local existing = player.gui.screen.logsim_runname
@@ -331,13 +317,13 @@ function UI.show_buffer_gui(player)
   }
   
 
--- TX Window (Transactions)
-top.add{
-  type = "button",
-  name = M.GUI_BTN_TX_OPEN,
-  caption = {"logistics_simulation.gui_tx_open"},
-  tooltip = {"logistics_simulation.gui_tx_title"}
-}
+  -- Transaction window button.
+  top.add{
+    type = "button",
+    name = M.GUI_BTN_TX_OPEN,
+    caption = {"logistics_simulation.gui_tx_open"},
+    tooltip = {"logistics_simulation.gui_tx_title"}
+  }
 
   top.add{ 
     type = "button", 
@@ -345,7 +331,7 @@ top.add{
     caption = {"logistics_simulation.buffer_copy"}
   }
   
-  -- *** NEW: Export Button ***
+  -- Export button.
   top.add{
     type = "button",
     name = M.GUI_BTN_EXPORT,
@@ -397,15 +383,15 @@ function UI.show_export_dialog(player)
     end
   end
 
-  -- Determine current export mode (set by your calling code)
-local mode = "buffer"
-if storage and type(storage.export_mode) == "table" then
-  mode = storage.export_mode[player.index] or "buffer"
-elseif storage and type(storage.export_mode) == "string" then
-  mode = storage.export_mode
-end
+  -- Determine current export mode set by the caller.
+  local mode = "buffer"
+  if storage and type(storage.export_mode) == "table" then
+    mode = storage.export_mode[player.index] or "buffer"
+  elseif storage and type(storage.export_mode) == "string" then
+    mode = storage.export_mode
+  end
 
-  -- Single instance per player: if already open, just update caption and bring to front
+  -- Single instance per player: update caption and bring existing dialog forward.
   local existing = player.gui.screen[M.GUI_EXPORT_FRAME]
   if existing and existing.valid then
     existing.caption = export_mode_caption(mode)
@@ -448,15 +434,11 @@ end
     caption = {"logistics_simulation.export_filename_label"}
   }
 
-  -- Always generate a fresh default filename (SAFE: no unknown helpers)
-  local function sanitize_filename(s)
-    return (tostring(s):gsub("[^%w%._%-]", "_"))
-  end
-
+  -- Default export names use the same sanitizing rule as file export.
   local run_tick = (storage and storage.run_start_tick) or 0
   local exp_tick = game.tick
-  local rn  = sanitize_filename((storage and storage.run_name) or "run")
-  local ver = sanitize_filename(UI.version or "unknown")
+  local rn  = Util.sanitize_filename((storage and storage.run_name) or "run")
+  local ver = Util.sanitize_filename(UI.version or "unknown")
 
   local default_name = string.format(
     "tick%09d__%s__logsim-v%s__export%09d",
@@ -635,7 +617,7 @@ function UI.show_reset_dialog(player)
     caption = {"logistics_simulation.reset_protected"}
   }
   
-  -- Statistics reset checkbox (v0.5.3)
+  -- Statistics reset checkbox.
   content.add{
     type = "checkbox",
     name = M.GUI_RESET_CHK_STATS,
@@ -685,14 +667,13 @@ function UI.close_reset_dialog(player)
   if f and f.valid then f.destroy() end
 end
 
--- NOTE: find_by_name() is kept simple for now.
--- For large GUIs, consider using direct paths like:
--- frame.children[index] or caching element references
-local function find_by_name(root, target)
+-- Recursively searches a GUI element tree by element name.
+-- This keeps dialog readers independent from exact child indexes.
+function UI.find_by_name(root, target)
   if not (root and root.valid) then return nil end
   if root.name == target then return root end
   for _, child in pairs(root.children) do
-    local found = find_by_name(child, target)
+    local found = UI.find_by_name(child, target)
     if found then return found end
   end
   return nil
@@ -703,12 +684,12 @@ function UI.read_reset_dialog(player)
   if not (gui and gui.valid) then return nil end
 
   local function chk(name)
-    local e = find_by_name(gui, name)
+    local e = UI.find_by_name(gui, name)
     return (e and e.valid and e.state) == true
   end
 
   local function txt(name)
-    local e = find_by_name(gui, name)
+    local e = UI.find_by_name(gui, name)
     if not (e and e.valid) then return "" end
     return e.text or ""
   end
@@ -725,7 +706,7 @@ function UI.read_reset_dialog(player)
   }
 end
 
--- Blueprint inventory sidecar (v0.6.0)
+-- Blueprint inventory sidecar.
 function UI.show_blueprint_sidecar(player)
   local root = player.gui.screen
   local old = root[M.GUI_BP_SIDECAR]
@@ -756,7 +737,7 @@ function UI.show_blueprint_sidecar(player)
     caption = {"logistics_simulation.bp_extract_button"}
   }
 
-  -- Position: top left (safe, doesn't collide with minimap)
+  -- Position: top left; avoids minimap overlap.
   frame.location = { 
     x = math.floor(M.GUI_BP_SIDECAR_MARGIN * scale), 
     y = math.floor(M.GUI_BP_SIDECAR_Y_OFFSET * scale) 
@@ -770,8 +751,8 @@ function UI.hide_blueprint_sidecar(player)
 end
 
 -- -----------------------------------------
--- Blueprint Inventory Result Window (autonomous)
--- Tabbed display, backward compatible with old single-string reports.
+-- Blueprint inventory result window.
+-- Tabbed display, backward-compatible with old single-string reports.
 -- -----------------------------------------
 
 local INV_TAB_DEFAULT = "assets"
@@ -933,7 +914,7 @@ function UI.show_inventory_window(player, data)
 
   local root = player.gui.screen
 
-  -- Wenn schon offen: nur Daten aktualisieren, sichtbaren Tab refreshen + nach vorne holen
+  -- Existing window: update data, refresh active tab and bring it forward.
   local frame = root[M.GUI_INV_FRAME]
   if frame and frame.valid then
     UI.refresh_inventory_window(player)
@@ -948,10 +929,10 @@ function UI.show_inventory_window(player, data)
   }
   frame.auto_center = true
 
-  -- Titelzeile mit X (vollständig lokalisiert)
+  -- Localized titlebar with close button.
   add_titlebar(frame, {"logistics_simulation.invwin_title"}, M.GUI_INV_CLOSE_X)
 
-  -- Toolbar: Copy + Export + Close (lokalisiert)
+  -- Localized toolbar: copy, export and close.
   local top = frame.add{
     type = "flow",
     name = "logsim_invwin_toolbar",
@@ -978,10 +959,10 @@ function UI.show_inventory_window(player, data)
     caption = {"logistics_simulation.invwin_close"}
   }
 
-  -- Registerkarten: Umschaltung erfolgt in gui_handlers.lua über die stabilen Elementnamen.
+  -- Tab switching is handled in gui_handlers.lua through stable element names.
   add_inventory_tabs(frame)
 
-  -- Content: Textbox für den aktiven Tab (read-only)
+  -- Read-only textbox for the active tab.
   local box = frame.add{
     type = "text-box",
     name = M.GUI_INV_BOX,
@@ -990,7 +971,7 @@ function UI.show_inventory_window(player, data)
   box.read_only = true
   box.word_wrap = false
 
-  -- Größe: nimm die Buffer-Dimensionen
+  -- Reuse buffer dimensions for the report window.
   box.style.width  = M.GUI_BUFFER_WIDTH
   box.style.height = M.GUI_BUFFER_HEIGHT
 
@@ -1038,7 +1019,7 @@ function UI.show_tx_gui(player)
     direction = "horizontal"
   }
 
-  -- <<  ganz zum Anfang
+  -- Jump to first page.
   top.add{
     type = "button",
     name = M.GUI_TX_BTN_HOME,
@@ -1047,7 +1028,7 @@ function UI.show_tx_gui(player)
     tooltip = {"logistics_simulation.tx_home_tooltip"}
   }
 
-  -- <  eine Seite zurück
+  -- Page backward.
   top.add{
     type = "button",
     name = M.GUI_TX_BTN_OLDER,
@@ -1056,7 +1037,7 @@ function UI.show_tx_gui(player)
     tooltip = {"logistics_simulation.tx_page_older_tooltip"}
   }
 
-  -- >  eine Seite vor
+  -- Page forward.
   top.add{
     type = "button",
     name = M.GUI_TX_BTN_NEWER,
@@ -1065,7 +1046,7 @@ function UI.show_tx_gui(player)
     tooltip = {"logistics_simulation.tx_page_newer_tooltip"}
   }
 
-  -- >>  ganz zum Ende
+  -- Jump to last page.
   top.add{
     type = "button",
     name = M.GUI_TX_BTN_END,
@@ -1074,8 +1055,8 @@ function UI.show_tx_gui(player)
     tooltip = {"logistics_simulation.tx_end_tooltip"}
   }
 
- -- Filter-Checkboxen (nur Anzeige, noch keine Wirkung)
-  top.add{ type = "empty-widget" }.style.width = 5  -- kleiner Abstand
+  -- Filter checkboxes; behavior is handled by the transaction module.
+  top.add{ type = "empty-widget" }.style.width = 5
 
   top.add{
     type = "checkbox",
@@ -1161,7 +1142,7 @@ function UI.close_tx_gui(player)
 end
 
 -- =====================================
--- Topbar Buttons (nach Vorbild change_ledger)
+-- Topbar buttons
 -- =====================================
 
 function UI.build_topbar(player)
@@ -1169,13 +1150,13 @@ function UI.build_topbar(player)
   
   local button_flow = mod_gui.get_button_flow(player)
   
-  -- Alte Topbar-Buttons entfernen, falls vorhanden
+  -- Remove existing topbar root if present.
   local old_root = button_flow[M.TOPBAR_ROOT]
   if old_root and old_root.valid then
     old_root.destroy()
   end
 
-  -- Frame für unsere Buttons (wie im change_ledger)
+  -- Root frame for topbar buttons.
   local frame = button_flow.add{
     type = "frame",
     name = M.TOPBAR_ROOT,
@@ -1183,14 +1164,14 @@ function UI.build_topbar(player)
     style = "slot_button_deep_frame"
   }
 
-  -- Flow für die Buttons
+  -- Horizontal button flow.
   local flow = frame.add{
     type = "flow",
     direction = "horizontal"
   }
   flow.style.horizontal_spacing = 0
 
-  -- Button 1: Einfacher Button (nur zum Klicken)
+  -- Button 1: buffer window.
   flow.add{
     type = "sprite-button",
     name = M.TOPBAR_BTN1,
@@ -1199,7 +1180,7 @@ function UI.build_topbar(player)
     style = "slot_button"
   }
 
-  -- Button 2: Toggle-Button – liest direkt storage.protocol_active
+  -- Button 2: protocol toggle; initial state is read from storage.
   local toggle2_sprite = (storage and storage.protocol_active) and M.TOPBAR_BTN2_ON_SPRITE or M.TOPBAR_BTN2_OFF_SPRITE
 
   flow.add{
@@ -1210,7 +1191,7 @@ function UI.build_topbar(player)
     style = "slot_button"
   }
 
-  -- Button 3: Toggle-Button – liest direkt storage.gp_enabled
+  -- Button 3: global power toggle; initial state is read from storage.
   local toggle3_sprite = (storage and storage.gp_enabled) and M.TOPBAR_BTN3_ON_SPRITE or M.TOPBAR_BTN3_OFF_SPRITE
   
   flow.add{
@@ -1222,19 +1203,18 @@ function UI.build_topbar(player)
   }
 
 
-local toggle4_sprite = (storage and storage.permanent_day) and M.TOPBAR_BTN4_ON_SPRITE or M.TOPBAR_BTN4_OFF_SPRITE
+  local toggle4_sprite = (storage and storage.permanent_day) and M.TOPBAR_BTN4_ON_SPRITE or M.TOPBAR_BTN4_OFF_SPRITE
 
-flow.add{
-  type    = "sprite-button",
-  name    = M.TOPBAR_BTN4,
-  sprite  = toggle4_sprite,
-  tooltip = M.TOPBAR_BTN4_TOOLTIP,
-  style   = "slot_button"
-}
-
+  flow.add{
+    type = "sprite-button",
+    name = M.TOPBAR_BTN4,
+    sprite = toggle4_sprite,
+    tooltip = M.TOPBAR_BTN4_TOOLTIP,
+    style = "slot_button"
+  }
 end
 
--- Helper: Alle Topbars neu aufbauen (nach Load/Init)
+-- Rebuild topbars after init/load.
 function UI.rebuild_all_topbars()
   for _, player in pairs(game.players) do
     UI.build_topbar(player)

@@ -40,5 +40,5 @@ data:extend({
     minimum_value = 0.01,
     maximum_value = 0.99,
     order = "b[ema]-b[slow]"
-  },
+  }
 })

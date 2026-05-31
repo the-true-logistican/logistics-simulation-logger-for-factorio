@@ -5,7 +5,9 @@
 --
 -- Version 0.8.1 introduce WIP (work in progress)
 -- Version 0.8.2 format_factory_stats: scenario, mods, power (3 windows), pollution (3 windows)
--- Version 0.9.0 Stable Ledger Operational Baseline 
+-- Version 0.9.0 Stable Ledger Operational Baseline
+-- Version 0.9.1 encode_chest handles cargo-wagon and fluid-wagon
+--               local function short_name only once 
 --
 -- =========================================
 
@@ -13,7 +15,7 @@ local M = require("config")
 local Util = require("utility")
 
 local SimLog = {}
-SimLog.version = "0.9.0"
+SimLog.version = "0.9.2"
 
 SimLog.MACHINE_STATE = {
   RUN       = "RUN",
@@ -31,6 +33,11 @@ local function add_status(map, key, value)
   if key ~= nil then
     map[key] = value
   end
+end
+
+local function short_name(name)
+  if not name then return "" end
+  return M.ITEM_ALIASES[name] or name
 end
 
 SimLog.STATUS_MAP = {}
@@ -368,9 +375,6 @@ end
 function SimLog.encode_virtual(obj_id, contents)
   if not obj_id or not contents or next(contents) == nil then return nil end
 
-  local function short_name(name)
-    return M.ITEM_ALIASES[name] or name
-  end
 
   local items = {}
   for key, count in pairs(contents) do
@@ -447,10 +451,6 @@ function SimLog.encode_machine(rec, ent)
     return rec.id .. "=MISSING"
   end
 
-  local function short_name(name)
-    if not name then return "" end
-    return M.ITEM_ALIASES[name] or name
-  end
 
   local mapped = SimLog.STATUS_MAP[ent.status]
   if not mapped then
@@ -527,22 +527,262 @@ function SimLog.encode_machine(rec, ent)
   return table.concat(out)
 end
 
+
+-- =========================================
+-- Player inventory encoding
+-- =========================================
+
+local PLAYER_INVENTORY_IDS = {
+  defines.inventory.character_main,
+  defines.inventory.character_trash
+}
+
+local function player_quality_name(q)
+  if q == nil then return nil end
+  if type(q) == "string" then return q end
+  if type(q) == "table" and q.name then return q.name end
+
+  local ok, name = pcall(function()
+    return q.name
+  end)
+
+  if ok and name then return name end
+  return tostring(q)
+end
+
+local function player_inventory_key(item_name, quality)
+  if not item_name then return nil end
+
+  quality = player_quality_name(quality)
+  if quality and quality ~= "normal" then
+    return tostring(item_name) .. "@" .. tostring(quality)
+  end
+
+  return tostring(item_name)
+end
+
+local function add_player_inventory_entry(dst, item_name, quality, count)
+  count = tonumber(count) or 0
+  if not item_name or count <= 0 then return end
+
+  local key = player_inventory_key(item_name, quality)
+  if not key then return end
+
+  dst[key] = (dst[key] or 0) + count
+end
+
+local function add_player_inventory_contents(dst, inv)
+  if not (inv and inv.valid) then return end
+
+  local contents = inv.get_contents()
+  if not contents then return end
+
+  for k, v in pairs(contents) do
+    local item_name
+    local quality
+    local count = 0
+
+    -- Factorio 2.x returns array entries like { name = ..., count = ..., quality = ... }.
+    if type(k) == "number" and type(v) == "table" then
+      item_name = v.name or v.item
+      quality = v.quality or v.quality_name
+      count = tonumber(v.count or v.amount) or 0
+
+    -- Defensive fallback for map-style content tables.
+    elseif type(k) == "string" then
+      item_name = k
+      if type(v) == "number" then
+        count = v
+      elseif type(v) == "table" then
+        quality = v.quality or v.quality_name
+        count = tonumber(v.count or v.amount) or 0
+      else
+        count = tonumber(v) or 0
+      end
+
+    -- Defensive fallback for item-with-quality keys.
+    elseif type(k) == "table" then
+      item_name = k.name or k.item
+      quality = k.quality or k.quality_name
+      if type(v) == "number" then
+        count = v
+      elseif type(v) == "table" then
+        count = tonumber(v.count or v.amount) or 0
+      else
+        count = tonumber(v) or 0
+      end
+    end
+
+    add_player_inventory_entry(dst, item_name, quality, count)
+  end
+end
+
+local function add_player_cursor_stack(dst, player)
+  if not (player and player.valid) then return end
+
+  local stack = player.cursor_stack
+  if not (stack and stack.valid_for_read) then return end
+
+  local quality = nil
+  local ok_quality, q = pcall(function()
+    return stack.quality
+  end)
+
+  if ok_quality then
+    quality = q
+  end
+
+  add_player_inventory_entry(dst, stack.name, quality, stack.count)
+end
+
+local function player_inventory_id(player)
+  local hand = storage
+    and storage.tx_hand_by_player_index
+    and storage.tx_hand_by_player_index[player.index]
+
+  if hand and type(hand.id) == "string" then
+    return hand.id:gsub("^H", "P")
+  end
+
+  local n = 1
+  for i = 1, #game.players do
+    local p = game.players[i]
+    if p and p.valid then
+      if p.index == player.index then
+        return string.format("P%02d", n)
+      end
+      n = n + 1
+    end
+  end
+
+  return string.format("P%02d", player.index)
+end
+
+function SimLog.encode_player_inventory(player)
+  if not (player and player.valid) then return nil end
+
+  local items_by_key = {}
+
+  for _, inv_id in ipairs(PLAYER_INVENTORY_IDS) do
+    add_player_inventory_contents(items_by_key, player.get_inventory(inv_id))
+  end
+
+  add_player_cursor_stack(items_by_key, player)
+
+  local obj_id = player_inventory_id(player)
+
+  if next(items_by_key) == nil then
+    return obj_id .. ":LEER=0"
+  end
+
+  local items = {}
+
+  for key, count in pairs(items_by_key) do
+    local item_name, quality = key:match("^(.-)@(.+)$")
+    item_name = item_name or key
+
+    local sname = short_name(item_name)
+    if quality and quality ~= "normal" then
+      items[#items + 1] = sname .. "@" .. tostring(quality) .. "=" .. tostring(count)
+    else
+      items[#items + 1] = sname .. "=" .. tostring(count)
+    end
+  end
+
+  table.sort(items)
+
+  return obj_id .. ":" .. table.concat(items, "|")
+end
+
+function SimLog.build_player_inventory_string_for_surface(surface_index)
+  local segments = {}
+
+  for i = 1, #game.players do
+    local player = game.players[i]
+
+    if player
+       and player.valid
+       and player.character
+       and player.surface
+       and player.surface.valid
+       and player.surface.index == surface_index then
+      local segment = SimLog.encode_player_inventory(player)
+      if segment and segment ~= "" then
+        segments[#segments + 1] = segment
+      end
+    end
+  end
+
+  return table.concat(segments, ";")
+end
+
 function SimLog.encode_chest(rec, ent)
   if not ent or not ent.valid then
     return rec.id .. ":MISSING=0"
   end
 
-  -- NEU: Tanks (Fluids) loggen
+  -- Fluid-Wagon: wie Storage-Tank, lese Fluid-Contents
+  if ent.type == "fluid-wagon" then
+    local fluids = ent.get_fluid_contents()
+    if not fluids or next(fluids) == nil then
+      return rec.id .. ":LEER=0"
+    end
+    local items = {}
+    for fname, amount in pairs(fluids) do
+      items[#items+1] = string.format("%s=%.1f", short_name(fname), tonumber(amount) or 0)
+    end
+    table.sort(items)
+    return rec.id .. ":" .. table.concat(items, "|")
+  end
+
+  -- Cargo-Wagon: wie Chest, aber defines.inventory.cargo_wagon
+  if ent.type == "cargo-wagon" then
+    local inv = ent.get_inventory(defines.inventory.cargo_wagon)
+    if not (inv and inv.valid) then
+      return rec.id .. ":NOINV=0"
+    end
+    local contents = inv.get_contents()
+    if not contents then
+      return rec.id .. ":LEER=0"
+    end
+    local items = {}
+    local any = false
+    for k, v in pairs(contents) do
+      local item_name, quality, count
+      if type(k) == "number" and type(v) == "table" then
+        item_name = v.name or v.item
+        quality   = v.quality or v.quality_name
+        count     = tonumber(v.count or v.amount) or 0
+      elseif type(k) == "string" then
+        item_name = k
+        count     = type(v) == "number" and v or (type(v) == "table" and (v.count or v.amount) or 0)
+      elseif type(k) == "table" then
+        item_name = k.name or k.item
+        quality   = k.quality or k.quality_name
+        count     = type(v) == "number" and v or (type(v) == "table" and (v.count or v.amount) or 0)
+      end
+      count = tonumber(count) or 0
+      if item_name and count > 0 then
+        any = true
+        local sname = short_name(item_name)
+        if quality and quality ~= "normal" then
+          items[#items+1] = sname .. "@" .. tostring(quality) .. "=" .. tostring(count)
+        else
+          items[#items+1] = sname .. "=" .. tostring(count)
+        end
+      end
+    end
+    if not any then return rec.id .. ":LEER=0" end
+    return rec.id .. ":" .. table.concat(items, "|")
+  end
+
+  -- Storage-Tank: Fluids loggen
   if ent.type == "storage-tank" then
     local fluids = ent.get_fluid_contents() -- {["water"]=123.4, ...} (Factorio 2.x ok)
     if not fluids or next(fluids) == nil then
       return rec.id .. ":LEER=0"
     end
 
-    local function short_name(name)
-      if not name then return "" end
-      return M.ITEM_ALIASES[name] or name
-    end
 
     local items = {}
     for fname, amount in pairs(fluids) do
@@ -569,10 +809,6 @@ function SimLog.encode_chest(rec, ent)
   local items = {}
   local any = false
 
-  local function short_name(name)
-    if not name then return "" end
-    return M.ITEM_ALIASES[name] or name
-  end
 
   for k, v in pairs(contents) do
     local item_name = nil
@@ -640,7 +876,7 @@ function SimLog.build_header(meta)
   if meta.surface then    lines[#lines+1] = "# surface=" .. tostring(meta.surface) end
   if meta.force then      lines[#lines+1] = "# force=" .. tostring(meta.force) end
 
-  lines[#lines+1] = "# format: ID;DateTime;tick;len4;surface;Power;Pollution;Inventory of registered Chests;Activity of registered Machines"
+  lines[#lines+1] = "# format: ID;DateTime;tick;len4;surface;Power;Pollution;Inventory of registered Chests;Player Inventories;Activity of registered Machines"
   lines[#lines+1] = "# ----"
 
   return table.concat(lines, "\n")

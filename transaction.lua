@@ -1,16 +1,16 @@
 -- =========================================
 -- LogSim (Factorio 2.0)
--- Transaction Module (visual inserter marks)
+-- Transaction Module
 --
 -- Goal:
 --   Build a transaction list based on inserter hand movements.
 --   Each physical move is represented as TWO postings:
 --     1) TAKE (source decreases)
 --     2) GIVE (destination increases)
---     3) OBJ_TRANSIT = "T00"   inernal transit
---     4) OBJ_SHIP    = "SHIP"  outbount shipping
+--     3) OBJ_TRANSIT = "T00"   internal transit
+--     4) OBJ_SHIP    = "SHIP"  outbound shipping
 --     5) OBJ_RECV    = "RECV"  inbound receive 
---     6) OBJ_WIP     = "WIP"   work in origress  
+--     6) OBJ_WIP     = "WIP"   work in progress
 --     7) OBJ_MAN     = "MAN"   manual crafting
 --
 -- Rules (Martin):
@@ -19,26 +19,29 @@
 --   - Only *registered* objects matter (Cxx, Txx, Mxx)
 --   - Inserters are NOT manually registered; they get an auto ID (Ixx)
 --   - For now: no file export; events stay in memory
---   - automatic mark "participating" inserters in yellow with text Ixx
---   - Allow explicitly marking watched inserters as "active" (green)
---   - Active boundary inserters represent Shipping/Receiving interface (pink)
+--   - Automatically mark participating inserters in yellow with text Ixx.
+--   - Allow explicitly marking watched boundary inserters as active.
+--   - Active boundary inserters represent Shipping/Receiving interfaces.
 --
 -- version 0.8.0 first complete working version
 -- version 0.8.1 tx window with buttons <<  <  >  >> 
---               number of items in transactipons from/to belts corrected
+--               corrected item quantities in transactions from/to belts
 --               simple filter for transactions with checkboxes
 --               ring buffer M.TX_MAX_EVENTS load/save secure
 -- Version 0.8.2 get global parameters from settings
 -- Version 0.8.3 WIP virtual account + Shift-R toggle normal/WIP/OFF (minimal additions)
 -- Version 0.8.4 transactions with the "hand" of the player
---               crafting in wirtual inventpry MAN
+--               crafting in virtual inventory MAN
 -- Version 0.8.5 Setup Parameters corrected
 -- Version 0.8.6 Transition: filled -> filled, same item/quality, changed count
--- Version 0.9.0 Stable Ledger Operational Baseline 
--- Version 0.9.1 TAKE from WIP uses BOM to relieve the WIP inventory
+-- Version 0.9.0 Stable Ledger Operational Baseline
+-- Version 0.9.3 rebuild_watchlist updates wagon positions before every scan
+-- Version 0.9.2 TAKE from WIP uses BOM to relieve the WIP inventory
 --               TAKE from T00 (transit) is now a post-deduct inventory transaction
---               GIVE to T00 in now a assumption-based posting
---               registering chests is now transitiv to machines to avoid implicit WIP
+--               GIVE to T00 is now an assumption-based posting
+--               registering chests is now transitive to machines to avoid implicit WIP
+-- Version 0.9.3 resolve_entity_at finds now blocked inserter
+--               transaction_refactored no change in funtionality
 --
 -- =========================================
 
@@ -48,9 +51,9 @@ local Chests = require("chests")
 local Util   = require("utility")  -- fly() lives here
 
 local Transaction = {}
-Transaction.version = "0.9.1"
+Transaction.version = "0.9.3"
 
--- forward declarations (needed because ensure_defaults() uses them)
+-- Forward declarations required by ensure_defaults().
 local tx_rb_ensure
 local tx_rb_resize
 
@@ -61,25 +64,26 @@ local tx_rb_resize
 local function ensure_defaults()
   Config.ensure_storage_defaults(storage)
 
-  -- NEW: keep WIP flag map (minimal, no structural change to existing ones)
+  -- WIP mode is stored separately to preserve the existing active-inserter structure.
   storage.tx_wip_inserters = storage.tx_wip_inserters or {}
 
-  -- NEW: ensure virtual account exists (migration safe even if config.lua not updated yet)
+  -- Migration-safe virtual account initialization.
   storage.tx_virtual = storage.tx_virtual or { T00 = {}, SHIP = {}, RECV = {}, WIP = {}, MAN = {} }
-  -- Migration safety: add any slot that may be missing from older saves
+  -- Older saves may lack WIP or MAN buckets.
   storage.tx_virtual.WIP = storage.tx_virtual.WIP or {}
   storage.tx_virtual.MAN = storage.tx_virtual.MAN or {}
 
   -- Keep TX ringbuffer settings in sync with config/settings across save/load.
   tx_rb_ensure()
 
-  -- NEW: player "hands" as pseudo-inserters (H01, H02, ...)
-  -- Minimal: provide an inserter-like list for later ledger logic.
+  -- Player hands are pseudo-inserters (H01, H02, ...).
+  -- The list format matches watched inserters for ledger display logic.
   storage.tx_hand_by_player_index = storage.tx_hand_by_player_index or {}
   storage.tx_hand_list = storage.tx_hand_list or {}
   storage.tx_inserter_list = storage.tx_inserter_list or {}
+  storage.tx_manual_pending_takes = storage.tx_manual_pending_takes or {}
 
-local desired_max =
+  local desired_max =
     tonumber(storage.tx_max_events)
     or Config.get_tx_max_events()
 
@@ -103,7 +107,7 @@ function Transaction.handle_register_hotkey(player, ent)
     return false
   end
 
-  -- API guard
+  -- Keep the inserter path isolated if the public helpers are unavailable.
   if not (Transaction.set_inserter_active and Transaction.is_watched_inserter) then
     return true
   end
@@ -112,8 +116,8 @@ function Transaction.handle_register_hotkey(player, ent)
   local is_active = Transaction.is_inserter_active and Transaction.is_inserter_active(unit)
   local is_wip = storage.tx_wip_inserters and storage.tx_wip_inserters[unit] == true
 
-  -- Cycle (Boundary-only enforced by set_inserter_active):
-  -- OFF -> ACTIVE(normal) -> ACTIVE(WIP) -> OFF
+  -- Boundary validation is enforced by set_inserter_active().
+  -- Repeated SHIFT+R toggles normal active mode and WIP mode.
   if not is_active then
     local ok, reason = Transaction.set_inserter_active(unit, true)
     if ok then
@@ -136,7 +140,7 @@ function Transaction.handle_register_hotkey(player, ent)
     Transaction.update_marks()
     Util.fly(player, ent, {"logistics_simulation.tx_inserter_marked_WIP"})
     return true
-  else	
+  else  
     storage.tx_wip_inserters[unit] = false
     Transaction.update_marks()
     Util.fly(player, ent, {"logistics_simulation.tx_inserter_marked_active"})
@@ -161,12 +165,12 @@ function Transaction.set_inserter_active(ins_unit, is_active)
   storage.tx_active_inserters = storage.tx_active_inserters or {}
 
   if is_active then
-    -- must be watched
+    -- Only watched inserters can become explicit boundary interfaces.
     if not (storage.tx_watch and storage.tx_watch[ins_unit] == true) then
       return false, "not_watched"
     end
 
-    -- must be a boundary inserter (exactly one side registered)
+    -- Boundary interfaces require exactly one registered side.
     if not Transaction.is_boundary_inserter(ins_unit) then
       storage.tx_active_inserters[ins_unit] = nil
       Transaction.update_marks()
@@ -178,10 +182,10 @@ function Transaction.set_inserter_active(ins_unit, is_active)
     return true
   end
 
-  -- deactivate
+  -- Deactivation also clears WIP mode.
   storage.tx_active_inserters[ins_unit] = nil
 
-  -- NEW: WIP flag should not survive when deactivated
+  -- WIP mode must not survive deactivation.
   if storage.tx_wip_inserters then
     storage.tx_wip_inserters[ins_unit] = nil
   end
@@ -202,23 +206,21 @@ end
 local function qual_name(q)
   if q == nil then return "normal" end
   if type(q) == "string" then return q end
-  -- Factorio 2.x: LuaQualityPrototype (or similar)
+  -- Factorio 2.x may return a LuaQualityPrototype.
   if type(q) == "table" and q.name then return q.name end
-  -- userdata/object: try .name safely
+  -- Userdata-style objects are read via pcall to avoid runtime errors.
   local ok, n = pcall(function() return q.name end)
   if ok and n then return n end
-  return tostring(q)  -- fallback (should not happen)
+  return tostring(q)
 end
 
 -- Item key formatter: include quality only if it's not "normal"
 local function fmt_item_key(k)
   if not k then return "" end
 
-  -- Factorio can represent inventory keys as:
-  -- 1) string "iron-plate"
-  -- 2) table {name="iron-plate", quality="normal"} (Factorio 2.x quality)
+  -- Inventory keys may be strings or Factorio 2.x item-with-quality tables.
   if type(k) == "string" then
-    -- Some codepaths may already embed quality as "name@quality"
+    -- Some code paths may already encode quality as "name@quality".
     local base, q = k:match("^(.-)@(.+)$")
     if base and q then
       if q == "normal" then return base end
@@ -299,11 +301,11 @@ local function virtual_add(obj, item, delta, qual)
 
   local new = (buf[key] or 0) + delta
 
-  -- NO CLAMPING. Keep true accounting signal.
+  -- Do not clamp balances; negative values are accounting signals.
   if new == 0 then
-    buf[key] = nil      -- optional: keep storage small + logs clean
+    buf[key] = nil
   else
-    buf[key] = new      -- can be positive OR negative
+    buf[key] = new
   end
 end
 
@@ -460,18 +462,17 @@ local function retrograde_take_product_from_wip(product, amount, qual, force)
 end
 
 tx_rb_ensure = function()
-  -- Ringbuffer state (O(1) push, O(1) random access in logical order)
+  -- Ring buffer state: O(1) push and O(1) logical access.
   storage.tx_events = storage.tx_events or {}
 
-  -- Max events can be configured (defaults to 500k)
+  -- Maximum event count is runtime-configurable.
   storage.tx_max_events = storage.tx_max_events or Config.get_tx_max_events()
 
   -- _tx_rb_initialized is the single explicit migration sentinel.
-  -- It is intentionally NOT set in config.lua ensure_storage_defaults —
+  -- It is intentionally NOT set in config.lua ensure_storage_defaults;
   -- only this function may set it to true.
-  -- Old saves (nil → first load ever) and brand-new saves (nil → init) both
-  -- go through this block exactly once, regardless of which individual fields
-  -- happen to exist already.
+  -- Old saves and brand-new saves both go through this block once,
+  -- regardless of which individual fields already exist.
   if not storage._tx_rb_initialized then
     local t = storage.tx_events
     local n = #t
@@ -480,11 +481,10 @@ tx_rb_ensure = function()
     storage.tx_write = n + 1
     storage.tx_size  = n
 
-    -- Ensure write stays in [1..max] even if table is larger than max
+    -- Keep the write index inside the configured buffer range.
     local max = storage.tx_max_events
     if n > max then
-      -- Keep only the last `max` events, in-place, without shifting big tables repeatedly.
-      -- We rebuild into a fresh array once (migration only).
+      -- Migration keeps the newest events without repeated table shifting.
       local newt = {}
       local start = n - max + 1
       for i = 1, max do
@@ -513,13 +513,13 @@ tx_rb_ensure = function()
     storage._tx_rb_initialized = true
   end
 
-  -- Normalize fields
+  -- Normalize persisted ring-buffer fields.
   storage.tx_seq  = storage.tx_seq  or 0
   storage.tx_head = storage.tx_head or 1
   storage.tx_size = storage.tx_size or 0
   storage.tx_write = storage.tx_write or 1
 
-  -- Clamp indices into bounds
+  -- Clamp persisted indices into the configured bounds.
   local max = storage.tx_max_events
   if storage.tx_head < 1 or storage.tx_head > max then storage.tx_head = 1 end
   if storage.tx_write < 1 or storage.tx_write > max then storage.tx_write = 1 end
@@ -544,7 +544,7 @@ tx_rb_resize = function(new_max)
 
   local new_ev = {}
   if keep > 0 then
-    local start_logical = old_size - keep + 1  -- 1..old_size
+    local start_logical = old_size - keep + 1
     for j = 1, keep do
       local i = start_logical + (j - 1)
       local phys = ((old_head + (i - 1) - 1) % old_max) + 1
@@ -578,7 +578,7 @@ end
 local function push_event(ev)
   tx_rb_ensure()
 
-  -- stable, monotonic ID (do NOT derive from list index; ringbuffer wraps)
+  -- Use monotonic IDs; ring-buffer indices are not stable identifiers.
   storage.tx_seq = (storage.tx_seq or 0) + 1
   ev.id = storage.tx_seq
 
@@ -589,7 +589,7 @@ local function push_event(ev)
 
   t[w] = ev
 
-  -- update running balances for virtual buffers (T00/SHIP/RECV/WIP/MAN)
+  -- Update running balances for virtual buffers.
   if ev and (ev.obj == "T00" or ev.obj == "SHIP" or ev.obj == "RECV"
              or ev.obj == "WIP" or ev.obj == "MAN") then
     local cnt = tonumber(ev.cnt) or 0
@@ -606,11 +606,11 @@ local function push_event(ev)
     end
   end
 
-  -- advance ringbuffer pointers (O(1), no table shifting)
+  -- Advance ring-buffer pointers without table shifting.
   if size < max then
     storage.tx_size = size + 1
   else
-    -- buffer full: overwrite oldest, so oldest pointer advances
+    -- Full buffer overwrites the oldest event.
     local head = storage.tx_head or 1
     storage.tx_head = (head % max) + 1
   end
@@ -635,28 +635,57 @@ local function resolve_entity_at(surface, pos)
   local r = 1.6
   local area = { {pos.x - r, pos.y - r}, {pos.x + r, pos.y + r} }
 
-  -- 1) Prefer containers/tanks
+  -- 1) Prefer already registered LogSim endpoints.
+  -- This is the robust path for inserters with a non-empty hand:
+  -- pickup_target/drop_target may be temporarily unavailable or unstable,
+  -- but pickup_position/drop_position still identify the logistics side.
   local found = surface.find_entities_filtered{
+    area = area
+  } or {}
+
+  for _, e in pairs(found) do
+    if e
+       and e.valid
+       and e.unit_number
+       and storage.tx_obj_by_unit
+       and storage.tx_obj_by_unit[e.unit_number] then
+      return e
+    end
+  end
+
+  -- 2) Then known registerable inventory/fluid endpoints.
+  -- Includes wagons explicitly; they were missing from the old fallback.
+  found = surface.find_entities_filtered{
     area = area,
-    type = {"container", "logistic-container", "storage-tank"},
+    type = {
+      "container",
+      "logistic-container",
+      "storage-tank",
+      "cargo-wagon",
+      "fluid-wagon"
+    },
     limit = 1
   }
   if found and found[1] then return found[1] end
 
-  -- 2) Then common machines
+  -- 3) Then common machines.
+  -- Keep this path for transitive machine registration.
   found = surface.find_entities_filtered{
     area = area,
-    type = {"assembling-machine", "furnace", "lab", "mining-drill"},
+    type = {
+      "assembling-machine",
+      "furnace",
+      "lab",
+      "mining-drill",
+      "rocket-silo"
+    },
     limit = 1
   }
   if found and found[1] then return found[1] end
 
-  -- 3) Fallback: any entity
-  found = surface.find_entities_filtered{
-    area = area,
-    limit = 1
-  }
-  return found and found[1] or nil
+  -- 4) No generic "any entity" fallback here.
+  -- Returning belts/rails/inserters is more harmful than returning nil.
+  return nil
 end
 
 local function get_targets(ins)
@@ -818,22 +847,320 @@ local function flush_deferred_transit_take(ins_rec, tick, ins_unit, item, cnt, q
 end
 
 
+local fmt_player_inv_id_from_hand_id
 
+-- -----------------------------------------
+-- Manual player-inventory retrograde resolution
+--
+-- Big Brother may report a GIVE into a player inventory without a matching
+-- TAKE. This can happen when another helper module creates material directly.
+-- In that case the created product is explained by consuming its recipe inputs
+-- from the same player inventory, using the same retrograde rule as WIP.
+-- -----------------------------------------
 
+local function is_player_inventory_obj(obj)
+  return type(obj) == "string" and obj:match("^P%d+$") ~= nil
+end
 
+local function manual_pending_key(ins_id, item, qual)
+  local key = vkey(item, qual or "normal")
+  if not key then return nil end
+  return tostring(ins_id or "H00") .. "|" .. key
+end
+
+local function cleanup_manual_pending_takes(tick)
+  local pending = storage.tx_manual_pending_takes
+  if not pending then return end
+
+  local now = tonumber(tick) or game.tick
+  local max_age = 600
+
+  for key, rec in pairs(pending) do
+    local rec_tick = tonumber(rec and rec.tick) or 0
+    if now - rec_tick > max_age then
+      pending[key] = nil
+    end
+  end
+end
+
+local function remember_manual_take(ins_id, item, amount, qual, tick)
+  amount = tonumber(amount) or 0
+  if not item or amount <= 0 then return end
+
+  storage.tx_manual_pending_takes = storage.tx_manual_pending_takes or {}
+  cleanup_manual_pending_takes(tick)
+
+  local key = manual_pending_key(ins_id, item, qual)
+  if not key then return end
+
+  local rec = storage.tx_manual_pending_takes[key]
+  if not rec then
+    rec = { item = item, qual = qual or "normal", count = 0, tick = tick or game.tick }
+    storage.tx_manual_pending_takes[key] = rec
+  end
+
+  rec.count = (tonumber(rec.count) or 0) + amount
+  rec.tick = tick or game.tick
+end
+
+local function consume_matching_manual_take(ins_id, item, amount, qual, tick)
+  amount = tonumber(amount) or 0
+  if not item or amount <= 0 then return amount end
+
+  storage.tx_manual_pending_takes = storage.tx_manual_pending_takes or {}
+  cleanup_manual_pending_takes(tick)
+
+  local key = manual_pending_key(ins_id, item, qual)
+  if not key then return amount end
+
+  local rec = storage.tx_manual_pending_takes[key]
+  local available = tonumber(rec and rec.count) or 0
+  if available <= 0 then return amount end
+
+  local matched = math.min(available, amount)
+  rec.count = available - matched
+
+  if rec.count <= 0 then
+    storage.tx_manual_pending_takes[key] = nil
+  else
+    rec.tick = tick or game.tick
+  end
+
+  return amount - matched
+end
+
+local function player_by_inventory_obj(obj)
+  if not is_player_inventory_obj(obj) then return nil end
+
+  for _, hand in ipairs(storage.tx_hand_list or {}) do
+    if hand and hand.id and fmt_player_inv_id_from_hand_id(hand.id) == obj then
+      return game.get_player(hand.player_index)
+    end
+  end
+
+  local n = tonumber(obj:match("^P(%d+)$"))
+  if not n then return nil end
+
+  local i = 1
+  for _, player in pairs(game.players) do
+    if player and player.valid then
+      if i == n then return player end
+      i = i + 1
+    end
+  end
+
+  return nil
+end
+
+local function read_player_inventory_availability(player)
+  local available = {}
+  if not (player and player.valid) then return available end
+
+  local inv_ids = {
+    defines.inventory.character_main,
+    defines.inventory.character_trash
+  }
+
+  for _, inv_id in ipairs(inv_ids) do
+    local inv = player.get_inventory(inv_id)
+    if inv and inv.valid then
+      local contents = inv.get_contents()
+      if contents then
+        for k, v in pairs(contents) do
+          local item_name, count, qual
+
+          if type(k) == "number" and type(v) == "table" then
+            item_name = v.name or v.item
+            qual = qual_name(v.quality or v.quality_name)
+            count = tonumber(v.count or v.amount) or 0
+          elseif type(k) == "string" then
+            item_name = k
+            qual = "normal"
+            count = type(v) == "number" and v or (type(v) == "table" and (tonumber(v.count or v.amount) or 0) or 0)
+          elseif type(k) == "table" then
+            item_name = k.name or k.item
+            qual = qual_name(k.quality or k.quality_name)
+            count = type(v) == "number" and v or (type(v) == "table" and (tonumber(v.count or v.amount) or 0) or 0)
+          end
+
+          if item_name and count and count > 0 then
+            local key = vkey(item_name, qual or "normal")
+            if key then
+              available[key] = (available[key] or 0) + count
+            end
+          end
+        end
+      end
+    end
+  end
+
+  local stack = player.cursor_stack
+  if stack and stack.valid_for_read and stack.name and stack.count and stack.count > 0 then
+    local qual = "normal"
+    local okq, q = pcall(function() return stack.quality end)
+    if okq and q then qual = qual_name(q) end
+    local key = vkey(stack.name, qual)
+    if key then
+      available[key] = (available[key] or 0) + stack.count
+    end
+  end
+
+  return available
+end
+
+local function player_inventory_consume_direct(ctx, item, amount, qual)
+  amount = tonumber(amount) or 0
+  if not ctx or not item or amount <= 0 then return amount end
+
+  qual = qual or "normal"
+  local key = vkey(item, qual)
+  if not key then return amount end
+
+  local have = tonumber(ctx.available[key]) or 0
+  local take = math.min(have, amount)
+
+  if take > 0 then
+    ctx.available[key] = have - take
+
+    push_event({
+      tick = ctx.tick,
+      ins_id = ctx.ins_id,
+      ins_unit = nil,
+      kind = "TAKE",
+      obj = ctx.obj,
+      obj_unit = nil,
+      item = item,
+      cnt = take,
+      qual = qual
+    })
+  end
+
+  return amount - take
+end
+
+local consume_player_inventory_input
+
+local function retrograde_player_ingredients_from_recipe(ctx, recipe_proto, out_amount, requested_amount, force, depth, visited)
+  if not (recipe_proto and out_amount and out_amount > 0) then return false end
+
+  local factor = (tonumber(requested_amount) or 0) / out_amount
+  if factor <= 0 then return true end
+
+  for _, ingredient in pairs(recipe_proto.ingredients or {}) do
+    local ing_name = ingredient and ingredient.name
+    local ing_amount = tonumber(ingredient and ingredient.amount) or 0
+
+    if ing_name and ing_amount > 0 then
+      consume_player_inventory_input(ctx, ing_name, ing_amount * factor, "normal", force, depth + 1, visited)
+    end
+  end
+
+  return true
+end
+
+consume_player_inventory_input = function(ctx, item, amount, qual, force, depth, visited)
+  amount = tonumber(amount) or 0
+  if not ctx or not item or amount <= 0 then return end
+
+  depth = tonumber(depth) or 0
+  local max_depth = tonumber(Config.COLLECT_DEPENDENC_DEPTH) or 30
+  if depth > max_depth then
+    push_event({
+      tick = ctx.tick,
+      ins_id = ctx.ins_id,
+      ins_unit = nil,
+      kind = "TAKE",
+      obj = ctx.obj,
+      obj_unit = nil,
+      item = item,
+      cnt = amount,
+      qual = qual or "normal"
+    })
+    return
+  end
+
+  local rest = player_inventory_consume_direct(ctx, item, amount, qual)
+  if rest <= 0 then return end
+
+  visited = visited or {}
+  if visited[item] then
+    push_event({
+      tick = ctx.tick,
+      ins_id = ctx.ins_id,
+      ins_unit = nil,
+      kind = "TAKE",
+      obj = ctx.obj,
+      obj_unit = nil,
+      item = item,
+      cnt = rest,
+      qual = qual or "normal"
+    })
+    return
+  end
+
+  local next_visited = {}
+  for k, v in pairs(visited) do next_visited[k] = v end
+  next_visited[item] = true
+
+  local recipe_proto, out_amount = find_recipe_for_product_one_level(item, force)
+  if not recipe_proto then
+    push_event({
+      tick = ctx.tick,
+      ins_id = ctx.ins_id,
+      ins_unit = nil,
+      kind = "TAKE",
+      obj = ctx.obj,
+      obj_unit = nil,
+      item = item,
+      cnt = rest,
+      qual = qual or "normal"
+    })
+    return
+  end
+
+  retrograde_player_ingredients_from_recipe(ctx, recipe_proto, out_amount, rest, force, depth, next_visited)
+end
+
+local function retrograde_give_product_to_player_inventory(ins_id, obj, player, product, amount, qual, tick)
+  amount = tonumber(amount) or 0
+  if not (is_player_inventory_obj(obj) and player and player.valid and product and amount > 0) then return false end
+
+  local force = player.force or game.forces.player
+  local recipe_proto, out_amount = find_recipe_for_product_one_level(product, force)
+
+  local ctx = {
+    obj = obj,
+    player = player,
+    available = read_player_inventory_availability(player),
+    tick = tick or game.tick,
+    ins_id = ins_id or "H00"
+  }
+
+  if not recipe_proto then
+    -- No recipe means the created item cannot be explained further.
+    -- Book an explicit inventory relief entry for the same item.
+    player_inventory_consume_direct(ctx, product, amount, qual)
+    return false
+  end
+
+  -- Critical rule: do not consume the created product itself here.
+  -- Only its inputs may explain the unmatched GIVE into the player inventory.
+  retrograde_player_ingredients_from_recipe(ctx, recipe_proto, out_amount, amount, force, 0, { [product] = true })
+  return true
+end
 
 
 -- Player inventory pseudo objects
-local function fmt_player_inv_id_from_hand_id(hand_id)
+fmt_player_inv_id_from_hand_id = function(hand_id)
   if type(hand_id) ~= "string" then return nil end
   return (hand_id:gsub("^H", "P"))
 end
 
--- Resolve BigBrother source/target to ledger object id
+-- Resolve a Big Brother source/target descriptor to a ledger object id.
 local function obj_id_for_manual_location(loc, player_index)
   if not loc then return OBJ_TRANSIT end
 
-  -- Player inventory
+  -- Player inventories map to pseudo hand objects.
   if type(loc.type) == "string" then
     local t = string.lower(loc.type)
     if string.find(t, "inventory", 1, true) or t == "player" then
@@ -843,27 +1170,26 @@ local function obj_id_for_manual_location(loc, player_index)
     end
   end
 
-  -- Entity by unit_number (BigBrother provides id)
+  -- Entity locations are matched by unit_number.
   local unit = tonumber(loc.id)
   if unit and storage.tx_obj_by_unit and storage.tx_obj_by_unit[unit] then
     return storage.tx_obj_by_unit[unit]
   end
 
-	-- Manual crafting / Make / handwork location (treat as MAN instead of Transit)
-	if type(loc.type) == "string" then
-	  local t = string.lower(loc.type)
-	  local slot = type(loc.slot_name) == "string" and string.lower(loc.slot_name) or ""
+  -- Manual crafting locations use MAN instead of Transit.
+  if type(loc.type) == "string" then
+    local t = string.lower(loc.type)
+    local slot = type(loc.slot_name) == "string" and string.lower(loc.slot_name) or ""
 
-	  if string.find(t, "craft", 1, true)
-		or string.find(t, "make", 1, true)
-		or string.find(t, "manual", 1, true)
-		or string.find(t, "hand", 1, true)
-		or string.find(slot, "craft", 1, true)
-		or string.find(slot, "make", 1, true)
-	  then
-		return OBJ_MAN
-	  end
-	end
+    if string.find(t, "craft", 1, true)
+       or string.find(t, "make", 1, true)
+       or string.find(t, "manual", 1, true)
+       or string.find(t, "hand", 1, true)
+       or string.find(slot, "craft", 1, true)
+       or string.find(slot, "make", 1, true) then
+      return OBJ_MAN
+    end
+  end
 
 
   return OBJ_TRANSIT
@@ -880,7 +1206,7 @@ function Transaction.ingest_manual_logistics_event(le)
   ensure_defaults()
   if not le then return end
 
-  -- Rebuild hands in case players changed (cheap)
+  -- Player membership can change between manual events.
   if Transaction.rebuild_hand_list then
     Transaction.rebuild_hand_list()
   end
@@ -917,6 +1243,24 @@ function Transaction.ingest_manual_logistics_event(le)
     cnt = qty,
     qual = qual
   })
+
+  if kind == "TAKE" then
+    -- Only non-player sources can explain a later GIVE into the player inventory.
+    -- TAKE from Pxx is an outbound movement from the player and must not offset
+    -- a future unmatched inventory creation.
+    if not is_player_inventory_obj(obj) then
+      remember_manual_take(ins_id, name, qty, qual, tick)
+    end
+    return
+  end
+
+  if kind == "GIVE" and is_player_inventory_obj(obj) then
+    local unmatched = consume_matching_manual_take(ins_id, name, qty, qual, tick)
+    if unmatched > 0 then
+      local player = player_by_inventory_obj(obj)
+      retrograde_give_product_to_player_inventory(ins_id, obj, player, name, unmatched, qual, tick)
+    end
+  end
 end
 
 local function opposite_obj(ins_unit, src_obj, dst_obj)
@@ -931,7 +1275,7 @@ local function opposite_obj(ins_unit, src_obj, dst_obj)
   return OBJ_TRANSIT
 end
 
--- Fallback resolver for inserters when get_entity_by_unit_number is unreliable
+-- Fallback resolver for inserters when direct unit-number lookup is unavailable.
 local function resolve_inserter_by_meta(unit)
   local meta = storage.tx_watch_meta and storage.tx_watch_meta[unit]
   if not meta then return nil end
@@ -970,7 +1314,7 @@ function Transaction.rebuild_hand_list()
   local list = {}
 
   local n = 1
-  -- Deterministic: iterate by numeric index (game.players is a LuaCustomTable userdata; ipairs() won't work)
+  -- game.players is a LuaCustomTable; numeric iteration keeps deterministic hand IDs.
   for i = 1, #game.players do
     local p = game.players[i]
     if p and p.valid then
@@ -993,24 +1337,24 @@ end
 function Transaction.rebuild_inserter_list()
   ensure_defaults()
 
-  -- Always refresh hands first (players can join/leave anytime)
+  -- Refresh hands first because players can join or leave at any tick.
   Transaction.rebuild_hand_list()
 
   local list = {}
 
-  -- Hands at the beginning
+  -- Hands are displayed before physical inserters.
   for _, h in ipairs(storage.tx_hand_list or {}) do
     list[#list+1] = h
   end
 
-  -- Then watched inserters
+  -- Physical inserters follow hands in stable order.
   local units = {}
   for ins_unit, _ in pairs(storage.tx_watch or {}) do
     units[#units+1] = ins_unit
   end
 
   table.sort(units, function(a, b)
-    -- Prefer stable inserter IDs (Ixx) if known, otherwise fallback to unit_number
+    -- Prefer stable Ixx ids; fallback to unit_number for new entries.
     local ra = storage.tx_inserter_by_unit and storage.tx_inserter_by_unit[a] or nil
     local rb = storage.tx_inserter_by_unit and storage.tx_inserter_by_unit[b] or nil
     local ida = ra and ra.id or nil
@@ -1048,7 +1392,7 @@ function Transaction.is_boundary_inserter(ins_unit)
   local src_obj = obj_id_for_entity(pick)
   local dst_obj = obj_id_for_entity(drop)
 
-  -- XOR: exactly one side registered
+  -- Boundary means exactly one side is registered.
   if (src_obj and not dst_obj) or (not src_obj and dst_obj) then
     return true
   end
@@ -1056,7 +1400,7 @@ function Transaction.is_boundary_inserter(ins_unit)
 end
 
 -- -----------------------------------------
--- Rendering helpers (optional visual marks)
+-- Rendering helpers for legacy mark cleanup.
 -- -----------------------------------------
 
 local function rendering_is_valid(id)
@@ -1126,7 +1470,7 @@ function Transaction.update_marks()
 end
 
 -- -----------------------------------------
--- Object map rebuild (registered objects only)
+-- Rebuild the map from Factorio unit_number to LogSim object id.
 -- -----------------------------------------
 
 function Transaction.rebuild_object_map()
@@ -1191,13 +1535,13 @@ function Transaction.autoregister_machine_closure(player, log)
         local src_obj = obj_id_for_entity(pick)
         local dst_obj = obj_id_for_entity(drop)
 
-        -- registriertes Objekt -> unregistrierte Maschine
+        -- Registered object feeds an unregistered machine.
         if src_obj and (not dst_obj) and Chests.is_machine_entity(drop) then
           local ok = Chests.register_machine_entity(drop, log, "closure_drop")
           if ok then added = added + 1 end
         end
 
-        -- unregistrierte Maschine -> registriertes Objekt
+        -- Unregistered machine feeds a registered object.
         if dst_obj and (not src_obj) and Chests.is_machine_entity(pick) then
           local ok = Chests.register_machine_entity(pick, log, "closure_pick")
           if ok then added = added + 1 end
@@ -1211,7 +1555,7 @@ function Transaction.autoregister_machine_closure(player, log)
   while pass < max_passes do
     pass = pass + 1
 
-    -- wichtig: neue Mxx müssen sofort in tx_obj_by_unit sichtbar werden
+    -- Newly registered Mxx objects must be visible before the next scan pass.
     Transaction.rebuild_object_map()
 
     local added_this_pass = 0
@@ -1248,8 +1592,7 @@ function Transaction.is_machine_required_by_closure(machine_unit)
 
   if not machine_unit then return false end
 
-  local mrec = storage.machines and storage.machines[machine_unit]
-  if not mrec then return false end
+  if not (storage.machines and storage.machines[machine_unit]) then return false end
 
   -- Current registry state must be reflected in tx_obj_by_unit.
   if Transaction.rebuild_object_map then
@@ -1329,6 +1672,19 @@ end
 function Transaction.rebuild_watchlist()
   ensure_defaults()
 
+  -- Wagon positions are refreshed before scanning so moving wagons use their current location.
+  if storage.registry then
+    for _, rec in pairs(storage.registry) do
+      if rec.kind == "wagon" or rec.kind == "fluid-wagon" then
+        local ent = game.get_entity_by_unit_number(rec.unit_number)
+        if ent and ent.valid then
+          rec.position      = { x = ent.position.x, y = ent.position.y }
+          rec.surface_index = ent.surface.index
+        end
+      end
+    end
+  end
+
   local watch = {}
   local r = 20
 
@@ -1339,12 +1695,12 @@ function Transaction.rebuild_watchlist()
     local src_obj = obj_id_for_entity(pick)
     local dst_obj = obj_id_for_entity(drop)
 
-    -- Cache boundary direction for robust SHIP/RECV logging
-    -- ship: registered source -> unregistered dest
-    -- recv: unregistered source -> registered dest
+    -- Cache boundary direction for robust SHIP/RECV logging.
     local boundary = nil
-    if src_obj and (not dst_obj) then boundary = 'ship'
-    elseif (not src_obj) and dst_obj then boundary = 'recv'
+    if src_obj and (not dst_obj) then
+      boundary = "ship"
+    elseif (not src_obj) and dst_obj then
+      boundary = "recv"
     end
 
     if not src_obj and not dst_obj then
@@ -1362,7 +1718,7 @@ function Transaction.rebuild_watchlist()
       m.boundary = boundary
       storage.tx_watch_meta[ins.unit_number] = m
     else
-      -- update boundary cache if already watched
+      -- Update boundary classification for existing watched inserters.
       local m = storage.tx_watch_meta[ins.unit_number]
       if m then
         m.boundary = boundary
@@ -1410,7 +1766,7 @@ function Transaction.rebuild_watchlist()
   storage.tx_watch = watch
   storage.tx_dbg_watch = { scanned = scanned, kept = total_kept, watch_size = table_size(watch), r = r, tick = game.tick }
 
-  -- HARD RULE: Active must not survive if no longer watched
+  -- Active mode must not survive if the inserter is no longer watched.
   if storage.tx_active_inserters then
     for ins_unit, _ in pairs(storage.tx_active_inserters) do
       if not watch[ins_unit] then
@@ -1419,7 +1775,7 @@ function Transaction.rebuild_watchlist()
     end
   end
 
-  -- HARD RULE #2: Active must not survive if no longer boundary
+  -- Active mode must not survive if the inserter is no longer a boundary.
   if storage.tx_active_inserters then
     for ins_unit, _ in pairs(storage.tx_active_inserters) do
       if watch[ins_unit] then
@@ -1430,7 +1786,7 @@ function Transaction.rebuild_watchlist()
     end
   end
 
-  -- NEW HARD RULE #3: WIP must not survive if no longer watched
+  -- WIP mode must not survive if the inserter is no longer watched.
   if storage.tx_wip_inserters then
     for ins_unit, _ in pairs(storage.tx_wip_inserters) do
       if not watch[ins_unit] then
@@ -1439,7 +1795,7 @@ function Transaction.rebuild_watchlist()
     end
   end
 
-  -- NEW HARD RULE #4: WIP must not survive if no longer boundary
+  -- WIP mode must not survive if the inserter is no longer a boundary.
   if storage.tx_wip_inserters then
     for ins_unit, _ in pairs(storage.tx_wip_inserters) do
       if watch[ins_unit] then
@@ -1450,8 +1806,7 @@ function Transaction.rebuild_watchlist()
     end
   end
 
-  -- NEW: build combined inserter list (hands first, then watched inserters)
-  -- Minimal: just makes Hxx available wherever we iterate inserter lists.
+  -- Build a combined hand/inserter list for display and export consumers.
   Transaction.rebuild_inserter_list()
 
   Transaction.update_marks()
@@ -1622,7 +1977,6 @@ local function process_inserter(ins, tick)
   end
 
 
-
   -- Any other change (rare): refresh last
   ins_rec.last = now
 end
@@ -1630,10 +1984,10 @@ end
 function Transaction.on_tick(tick)
   ensure_defaults()
 
-  -- Gate lives in control.lua (protocol_active). No second flag needed here.
+  -- control.lua owns protocol_active; this module only processes when called.
   tick = tick or game.tick
 
-  -- periodic rebuild
+  -- Rebuild object and watch maps periodically.
   local interval = storage.tx_rebuild_interval or 60
   if (tick - (storage.tx_last_rebuild_tick or 0)) >= interval then
     Transaction.rebuild_object_map()
@@ -1672,7 +2026,7 @@ function Transaction.on_tick(tick)
           storage.tx_active_inserters[ins_unit] = nil
         end
 
-        -- NEW: clear WIP flag too
+        -- WIP mode must be cleared when the watched inserter is removed.
         if storage.tx_wip_inserters then
           storage.tx_wip_inserters[ins_unit] = nil
         end
@@ -1682,7 +2036,7 @@ function Transaction.on_tick(tick)
 end
 
 -- -----------------------------------------
--- TX Viewer helpers (for UI text-box paging)
+-- TX viewer helpers for UI text-box paging.
 -- -----------------------------------------
 
 -- We intentionally keep the TX viewer "one window per page".

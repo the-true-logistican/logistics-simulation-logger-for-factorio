@@ -1,11 +1,31 @@
 data:extend({
-  -- Bestehende custom-inputs bleiben
-  { type = "custom-input", name = "logsim_toggle_buffer",       key_sequence = "SHIFT + B", consuming = "none"},
-  { type = "custom-input", name = "logsim_register_chest",      key_sequence = "SHIFT + R", consuming = "game-only"},
-  { type = "custom-input", name = "logsim_unregister_selected", key_sequence = "SHIFT + U", consuming = "none"},
-  { type = "custom-input", name = "logsim_register_protect",    key_sequence = "SHIFT + P", consuming = "game-only"},
-  
-  -- NEUE Sprites für die Topbar-Buttons
+  -- Custom inputs used by the runtime control layer.
+  {
+    type = "custom-input",
+    name = "logsim_toggle_buffer",
+    key_sequence = "SHIFT + B",
+    consuming = "none"
+  },
+  {
+    type = "custom-input",
+    name = "logsim_register_chest",
+    key_sequence = "SHIFT + R",
+    consuming = "game-only"
+  },
+  {
+    type = "custom-input",
+    name = "logsim_unregister_selected",
+    key_sequence = "SHIFT + U",
+    consuming = "none"
+  },
+  {
+    type = "custom-input",
+    name = "logsim_register_protect",
+    key_sequence = "SHIFT + P",
+    consuming = "game-only"
+  },
+
+  -- Sprite prototypes used by topbar GUI buttons.
   {
     type = "sprite",
     name = "ls_button1_icon",
@@ -14,7 +34,7 @@ data:extend({
     width = 32,
     height = 32,
     mipmap_count = 1,
-    flags = {"gui-icon"}
+    flags = { "gui-icon" }
   },
   {
     type = "sprite",
@@ -24,7 +44,7 @@ data:extend({
     width = 32,
     height = 32,
     mipmap_count = 1,
-    flags = {"gui-icon"}
+    flags = { "gui-icon" }
   },
   {
     type = "sprite",
@@ -34,7 +54,7 @@ data:extend({
     width = 32,
     height = 32,
     mipmap_count = 1,
-    flags = {"gui-icon"}
+    flags = { "gui-icon" }
   },
   {
     type = "sprite",
@@ -44,7 +64,7 @@ data:extend({
     width = 32,
     height = 32,
     mipmap_count = 1,
-    flags = {"gui-icon"}
+    flags = { "gui-icon" }
   },
   {
     type = "sprite",
@@ -54,24 +74,24 @@ data:extend({
     width = 32,
     height = 32,
     mipmap_count = 1,
-    flags = {"gui-icon"}
+    flags = { "gui-icon" }
   },
   {
     type = "sprite",
     name = "ls_day_on_icon",
     filename = "__logistics_simulation__/graphics/sun-icon.png",
-    width = 32, 
+    width = 32,
     height = 32,
     mipmap_count = 1,
-    flags = {"gui-icon"}
+    flags = { "gui-icon" }
   },
   {
     type = "sprite",
     name = "ls_day_off_icon",
     filename = "__logistics_simulation__/graphics/daynight-icon.png",
-    width = 32, 
+    width = 32,
     height = 32,
     mipmap_count = 1,
-    flags = {"gui-icon"}
+    flags = { "gui-icon" }
   }
 })
